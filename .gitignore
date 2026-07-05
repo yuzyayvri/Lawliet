@@ -1,0 +1,6 @@
+.aider*
+
+# Folders to ignore
+build/
+dev/
+pgn_data/
