@@ -233,8 +233,13 @@ int Lawliet::evaluateBoard(const Board& board, int alpha, int beta, const Search
         }
         int sideIdx = (board.turn == Board::WHITE) ? 0 : 1;
         int correction = ctx->corrHist[sideIdx][pawnKey % 16384];
-        mgScore += correction / 16;
-        egScore += correction / 16;
+        if (board.turn == Board::WHITE) {
+            mgScore += correction / 16;
+            egScore += correction / 16;}
+            else {
+                mgScore -= correction / 16;
+                egScore -= correction / 16;
+                }
     }
 
     // Bishop Pair Endgame scaling
@@ -270,7 +275,8 @@ int Lawliet::evaluateBoard(const Board& board, int alpha, int beta, const Search
         bp_key &= bp_key - 1;
     }
 
-    PawnEntry& pEntry = pawnTable[pawnKey & (PAWN_SIZE - 1)];
+    PawnEntry localEntry;
+    PawnEntry& pEntry = ctx ? ctx->pawnTable[pawnKey & (PAWN_SIZE - 1)] : localEntry;
 
     int pawnMg = 0;
     int pawnEg = 0;
@@ -346,8 +352,8 @@ int Lawliet::evaluateBoard(const Board& board, int alpha, int beta, const Search
                     }
                 }
                 if (connectedPasser) {
-                    pawnMg += 25 + rank * 5;
-                    pawnEg += 50 + rank * 15;
+                    pawnMg += 25 + (7 - rank) * 5;
+                    pawnEg += 50 + (7 - rank) * 15;
                 }
             }
         }
@@ -415,8 +421,8 @@ int Lawliet::evaluateBoard(const Board& board, int alpha, int beta, const Search
                 }
                 if (connectedPasser) {
                     int rMapped = 7 - rank;
-                    pawnMg -= (25 + rMapped * 5);
-                    pawnEg -= (50 + rMapped * 15);
+                    pawnMg -= (25 + rank * 5);
+                    pawnEg -= (50 + rank * 15);
                 }
             }
         }
@@ -1314,13 +1320,12 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
         if (excludedMove.fromSquare != -1 && m == excludedMove) continue;
         bool isQuiet = (m.pieceCaptured == 0 && m.promotionPiece == 0 && !m.wasCastling);
 
-        // --- Static Exchange Evaluation (SEE) Pruning for Bad Captures ---
+        // Pre-calculate SEE score on the unmodified board state
+        int seeScore = 0;
+        bool isCapture = (m.pieceCaptured != 0 || m.wasEnPassant);
+
         if (depth <= 4 && !inCheck && (m.pieceCaptured != 0 || m.wasEnPassant)) {
-            int seeScore = see(board, m.fromSquare, m.toSquare);
-            if (seeScore < -17 * depth * depth) {
-                undoMove(board, m, hash, ctx);
-                continue;
-            }
+            seeScore = see(board, m.fromSquare, m.toSquare);
         }
 
         doMove(board, m, hash, ctx);
@@ -1334,6 +1339,14 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
 
         legalMovesSearched++; // Confirmed valid move
         bool givesCheck = board.isInCheck(board.turn);
+
+        // --- Static Exchange Evaluation (SEE) Pruning for Bad Captures ---
+        if (depth <= 4 && !inCheck && isCapture && !givesCheck) {
+            if (seeScore < -17 * depth * depth) {
+                undoMove(board, m, hash, ctx);
+                continue;
+                }
+                }
 
         // Safe Late Move Pruning and Futility Pruning after doMove
         // Note: Using movesSearched here since pruning choices rely on position in the ordered queue
@@ -1567,7 +1580,6 @@ uint16_t OpeningBook::lookup(uint64_t polyKey) const {
 
 Lawliet::Lawliet(int depth) : maxDepth(depth) {
     initTables(); transpositionTable.resize(TT_SIZE);
-    pawnTable.resize(PAWN_SIZE); // Initializing Pawn Hash Table (PHT)
     std::mt19937_64 rng(0x4C41776C696574ULL);
     for (int sq = 0; sq < 64; ++sq) for (int p = 0; p < 12; ++p) zobristPiece[sq][p] = rng();
     for (int c = 0; c < 16; ++c) zobristCastle[c] = rng();

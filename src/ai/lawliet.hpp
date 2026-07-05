@@ -86,6 +86,17 @@ public:
 };
 
 // ============================================================================
+// PAWN HASH TABLE (PHT) STRUCTURE
+// ============================================================================
+struct PawnEntry {
+    uint64_t key = 0;          // Unique pawn skeleton Zobrist key
+    int mgScore = 0;           // Cached static pawn score (Middlegame)
+    int egScore = 0;           // Cached static pawn score (Endgame)
+    uint64_t wPassedPawns = 0; // Bitboard of White passed pawns
+    uint64_t bPassedPawns = 0; // Bitboard of Black passed pawns
+};
+
+// ============================================================================
 // SEARCH CONTEXT & MOVE ORDERING HEURISTICS
 // ============================================================================
 struct SearchContext {
@@ -108,6 +119,9 @@ struct SearchContext {
     uint64_t hashStack[4096]{};
     int hashStackIdx = 0;
 
+    // Thread-local Pawn Hash Table (PHT) to ensure 100% thread-safety
+    mutable PawnEntry pawnTable[16384]{};
+
     // Search buffers to minimize heap allocations per thread
     Move moveBuffers[210][256]{};
     int moveCounts[210]{};
@@ -122,17 +136,6 @@ struct SearchContext {
     int maxQuiescencePly = 0;
     int bestScore = 0;
     int threadId = 0; // Diversifies Lazy SMP search branches
-};
-
-// ============================================================================
-// PAWN HASH TABLE (PHT) STRUCTURE
-// ============================================================================
-struct PawnEntry {
-    uint64_t key = 0;          // Unique pawn skeleton Zobrist key
-    int mgScore = 0;           // Cached static pawn score (Middlegame)
-    int egScore = 0;           // Cached static pawn score (Endgame)
-    uint64_t wPassedPawns = 0; // Bitboard of White passed pawns
-    uint64_t bPassedPawns = 0; // Bitboard of Black passed pawns
 };
 
 // ============================================================================
@@ -178,7 +181,6 @@ private:
     static int lmrTable[128][256];
 
     std::vector<TTEntry> transpositionTable;
-    mutable std::vector<PawnEntry> pawnTable; // Lock-free mutable PHT
 
     uint64_t zobristPiece[64][12]{};
     uint64_t zobristCastle[16]{};
