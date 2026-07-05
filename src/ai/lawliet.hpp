@@ -38,7 +38,8 @@ public:
             std::vector<std::string> fallbacks = {
                 "book.bin", "../book.bin", "../../book.bin",
                 "bin/book.bin", "../bin/book.bin", "../../bin/book.bin",
-                "gm2001.bin", "../gm2001.bin", "../../gm2001.bin"
+                "gm2001.bin", "../gm2001.bin", "../../gm2001.bin",
+                "../src/book.bin", "../..src/book.bin"
             };
             for (const auto& path : fallbacks) {
                 if (path == filename) continue;
