@@ -5,6 +5,8 @@ Lawliet speaks UCI, it's compatible with GUIs like [Cute Chess](https://github.c
 
 Lawliet does come with a mini chess sandbox, but it's now an unused artifact from Lawliet's early days before I made it speak UCI and I generally do not recommend using it.
 
+Lawliet's first generation of releases are named **Intuition**. After that, the second generation is to be named **Deduction**, followed by **Mastermind** in the future. A generation is dictated by a major milestone or complete overhaul.
+
 ## Building
 ```bash
 mkdir build
