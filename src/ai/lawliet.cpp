@@ -1314,15 +1314,6 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
         if (excludedMove.fromSquare != -1 && m == excludedMove) continue;
         bool isQuiet = (m.pieceCaptured == 0 && m.promotionPiece == 0 && !m.wasCastling);
 
-        doMove(board, m, hash, ctx);
-
-        // NEW: Fast legality check post-move.
-        // Because turn is flipped in doMove, we check if the side that just moved is in check
-        if (board.isInCheck(-board.turn)) {
-            undoMove(board, m, hash, ctx);
-            continue; // Skip this illegal pseudo-legal move
-        }
-
         // --- Static Exchange Evaluation (SEE) Pruning for Bad Captures ---
         if (depth <= 4 && !inCheck && (m.pieceCaptured != 0 || m.wasEnPassant)) {
             int seeScore = see(board, m.fromSquare, m.toSquare);
@@ -1330,6 +1321,15 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
                 undoMove(board, m, hash, ctx);
                 continue;
             }
+        }
+
+        doMove(board, m, hash, ctx);
+
+        // NEW: Fast legality check post-move.
+        // Because turn is flipped in doMove, we check if the side that just moved is in check
+        if (board.isInCheck(-board.turn)) {
+            undoMove(board, m, hash, ctx);
+            continue; // Skip this illegal pseudo-legal move
         }
 
         legalMovesSearched++; // Confirmed valid move
