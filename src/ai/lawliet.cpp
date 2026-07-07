@@ -2,6 +2,7 @@
 #pragma GCC target("avx2,bmi,bmi2,lzcnt,popcnt")
 #include "lawliet.hpp"
 #include "time_manager.hpp"
+#include "../core/parameters.hpp"
 #include <cstring>
 #include <random>
 #include <algorithm>
@@ -235,17 +236,17 @@ int Lawliet::evaluateBoard(const Board& board, int alpha, int beta, const Search
         int correction = ctx->corrHist[sideIdx][pawnKey % 16384];
         if (board.turn == Board::WHITE) {
             mgScore += correction / 16;
-            egScore += correction / 16;}
-            else {
-                mgScore -= correction / 16;
-                egScore -= correction / 16;
-                }
+            egScore += correction / 16;
+        } else {
+            mgScore -= correction / 16;
+            egScore -= correction / 16;
+        }
     }
 
     // Bishop Pair Endgame scaling
     int whiteBishops = __builtin_popcountll(board.pieceBB[2]), blackBishops = __builtin_popcountll(board.pieceBB[8]);
-    if (whiteBishops >= 2) { mgScore += 30; egScore += 65; }
-    if (blackBishops >= 2) { mgScore -= 30; egScore -= 65; }
+    if (whiteBishops >= 2) { mgScore += g_Params.BishopPairMg; egScore += g_Params.BishopPairEg; }
+    if (blackBishops >= 2) { mgScore -= g_Params.BishopPairMg; egScore -= g_Params.BishopPairEg; }
 
     uint64_t whitePawns = board.pieceBB[0], blackPawns = board.pieceBB[6], allPawns = whitePawns | blackPawns;
 
@@ -255,10 +256,6 @@ int Lawliet::evaluateBoard(const Board& board, int alpha, int beta, const Search
 
     uint64_t wSafe = ~bPawnAttacks;
     uint64_t bSafe = ~wPawnAttacks;
-
-    // Upgraded passed pawn scaling
-    const int passedPawnMg[8] = { 0, 150, 100, 60, 30, 15, 5, 0 };
-    const int passedPawnEg[8] = { 0, 320, 240, 150, 90, 40, 15, 0 };
 
     int wkSq = board.findKing(Board::WHITE), bkSq = board.findKing(Board::BLACK);
 
@@ -295,11 +292,11 @@ int Lawliet::evaluateBoard(const Board& board, int alpha, int beta, const Search
         while (wp) {
             int sq = __builtin_ctzll(wp); wp &= wp - 1; int file = sq % 8, rank = sq / 8;
 
-            if (__builtin_popcountll(whitePawns & fileMasks[file]) > 1) { pawnMg -= 20; pawnEg -= 25; }
-            if (!(whitePawns & pawnIsolatedMask[sq])) { pawnMg -= 20; pawnEg -= 25; }
+            if (__builtin_popcountll(whitePawns & fileMasks[file]) > 1) { pawnMg += g_Params.DoubledPawnMg; pawnEg += g_Params.DoubledPawnEg; }
+            if (!(whitePawns & pawnIsolatedMask[sq])) { pawnMg += g_Params.IsolatedPawnMg; pawnEg += g_Params.IsolatedPawnEg; }
             if (rank >= 2 && rank <= 5) {
                 uint64_t ranksBehind = ~((1ULL << (rank * 8)) - 1);
-                if (!(pawnIsolatedMask[sq] & whitePawns & ranksBehind) && (Board::pawnAttacks[0][sq - 8] & blackPawns)) { pawnMg -= 20; pawnEg -= 25; }
+                if (!(pawnIsolatedMask[sq] & whitePawns & ranksBehind) && (Board::pawnAttacks[0][sq - 8] & blackPawns)) { pawnMg += g_Params.BackwardPawnMg; pawnEg += g_Params.BackwardPawnEg; }
             }
 
             bool connected = false;
@@ -312,16 +309,16 @@ int Lawliet::evaluateBoard(const Board& board, int alpha, int beta, const Search
                 if (file < 7) sameRankNeighbors |= (1ULL << (sq + 1));
                 bool phalanx = (sameRankNeighbors & whitePawns);
 
-                int bonusMg = 5, bonusEg = 5;
-                if (defended) { bonusMg += 10; bonusEg += 15; }
-                if (phalanx) { bonusMg += 8; bonusEg += 10; }
+                int bonusMg = g_Params.ConnectedPawnMg, bonusEg = g_Params.ConnectedPawnEg;
+                if (defended) { bonusMg += g_Params.ConnectedPawnDefendedMg; bonusEg += g_Params.ConnectedPawnDefendedEg; }
+                if (phalanx) { bonusMg += g_Params.ConnectedPawnPhalanxMg; bonusEg += g_Params.ConnectedPawnPhalanxEg; }
                 pawnMg += bonusMg; pawnEg += bonusEg;
             }
 
             if (!(blackPawns & pawnPassedMask[0][sq])) {
                 pEntry.wPassedPawns |= (1ULL << sq); // Store white passed pawn
-                int bonusMg = passedPawnMg[rank];
-                int bonusEg = passedPawnEg[rank];
+                int bonusMg = g_Params.PassedPawnRankMg[rank];
+                int bonusEg = g_Params.PassedPawnRankEg[rank];
 
                 // Blocked passed pawn protection scaling
                 int frontSq = sq - 8;
@@ -352,8 +349,8 @@ int Lawliet::evaluateBoard(const Board& board, int alpha, int beta, const Search
                     }
                 }
                 if (connectedPasser) {
-                    pawnMg += 25 + (7 - rank) * 5;
-                    pawnEg += 50 + (7 - rank) * 15;
+                    pawnMg += g_Params.ConnectedPassedPawnMgBase + (7 - rank) * g_Params.ConnectedPassedPawnMgFactor;
+                    pawnEg += g_Params.ConnectedPassedPawnEgBase + (7 - rank) * g_Params.ConnectedPassedPawnEgFactor;
                 }
             }
         }
@@ -362,11 +359,11 @@ int Lawliet::evaluateBoard(const Board& board, int alpha, int beta, const Search
         uint64_t bp = blackPawns;
         while (bp) {
             int sq = __builtin_ctzll(bp); bp &= bp - 1; int file = sq % 8, rank = sq / 8;
-            if (__builtin_popcountll(blackPawns & fileMasks[file]) > 1) { pawnMg += 20; pawnEg += 25; }
-            if (!(blackPawns & pawnIsolatedMask[sq])) { pawnMg += 20; pawnEg += 25; }
+            if (__builtin_popcountll(blackPawns & fileMasks[file]) > 1) { pawnMg -= g_Params.DoubledPawnMg; pawnEg -= g_Params.DoubledPawnEg; }
+            if (!(blackPawns & pawnIsolatedMask[sq])) { pawnMg -= g_Params.IsolatedPawnMg; pawnEg -= g_Params.IsolatedPawnEg; }
             if (rank >= 2 && rank <= 5) {
                 uint64_t ranksBehind = (1ULL << (rank * 8)) - 1;
-                if (!(pawnIsolatedMask[sq] & blackPawns & ranksBehind) && (Board::pawnAttacks[1][sq + 8] & whitePawns)) { pawnMg += 20; pawnEg += 25; }
+                if (!(pawnIsolatedMask[sq] & blackPawns & ranksBehind) && (Board::pawnAttacks[1][sq + 8] & whitePawns)) { pawnMg -= g_Params.BackwardPawnMg; pawnEg -= g_Params.BackwardPawnEg; }
             }
 
             bool connected = false;
@@ -379,17 +376,17 @@ int Lawliet::evaluateBoard(const Board& board, int alpha, int beta, const Search
                 if (file < 7) sameRankNeighbors |= (1ULL << (sq + 1));
                 bool phalanx = (sameRankNeighbors & blackPawns);
 
-                int bonusMg = 5, bonusEg = 5;
-                if (defended) { bonusMg += 10; bonusEg += 15; }
-                if (phalanx) { bonusMg += 8; bonusEg += 10; }
+                int bonusMg = g_Params.ConnectedPawnMg, bonusEg = g_Params.ConnectedPawnEg;
+                if (defended) { bonusMg += g_Params.ConnectedPawnDefendedMg; bonusEg += g_Params.ConnectedPawnDefendedEg; }
+                if (phalanx) { bonusMg += g_Params.ConnectedPawnPhalanxMg; bonusEg += g_Params.ConnectedPawnPhalanxEg; }
                 pawnMg -= bonusMg; pawnEg -= bonusEg;
             }
 
             if (!(whitePawns & pawnPassedMask[1][sq])) {
                 pEntry.bPassedPawns |= (1ULL << sq); // Store black passed pawn
                 int rMapped = 7 - rank;
-                int bonusMg = passedPawnMg[rMapped];
-                int bonusEg = passedPawnEg[rMapped];
+                int bonusMg = g_Params.PassedPawnRankMg[rMapped];
+                int bonusEg = g_Params.PassedPawnRankEg[rMapped];
 
                 // Blocked passed pawn protection scaling
                 int frontSq = sq + 8;
@@ -421,8 +418,8 @@ int Lawliet::evaluateBoard(const Board& board, int alpha, int beta, const Search
                 }
                 if (connectedPasser) {
                     int rMapped = 7 - rank;
-                    pawnMg -= (25 + rank * 5);
-                    pawnEg -= (50 + rank * 15);
+                    pawnMg -= (g_Params.ConnectedPassedPawnMgBase + rank * g_Params.ConnectedPassedPawnMgFactor);
+                    pawnEg -= (g_Params.ConnectedPassedPawnEgBase + rank * g_Params.ConnectedPassedPawnEgFactor);
                 }
             }
         }
@@ -442,14 +439,14 @@ int Lawliet::evaluateBoard(const Board& board, int alpha, int beta, const Search
         int sq = __builtin_ctzll(wPassed); wPassed &= wPassed - 1;
         int file = sq % 8, rank = sq / 8;
         uint64_t behindMask = fileMasks[file] & ~((1ULL << ((rank + 1) * 8)) - 1);
-        if (board.pieceBB[3] & behindMask) { mgScore += 20; egScore += 35; }
-        if (board.pieceBB[9] & behindMask) { mgScore -= 10; egScore -= 20; }
+        if (board.pieceBB[3] & behindMask) { mgScore += g_Params.RookBehindFriendlyPassedPawnMg; egScore += g_Params.RookBehindFriendlyPassedPawnEg; }
+        if (board.pieceBB[9] & behindMask) { mgScore += g_Params.RookBehindEnemyPassedPawnMg; egScore += g_Params.RookBehindEnemyPassedPawnEg; }
 
         // Dynamic King proximity bonus for White passed pawn
         if (wkSq != -1 && bkSq != -1) {
             int wDist = kingDistance(wkSq, sq);
             int bDist = kingDistance(bkSq, sq);
-            egScore += (bDist - wDist) * 25;
+            egScore += (bDist - wDist) * g_Params.KingProximityToPassedPawnEg;
         }
     }
 
@@ -458,41 +455,41 @@ int Lawliet::evaluateBoard(const Board& board, int alpha, int beta, const Search
         int sq = __builtin_ctzll(bPassed); bPassed &= bPassed - 1;
         int file = sq % 8, rank = sq / 8;
         uint64_t behindMask = fileMasks[file] & ((1ULL << (rank * 8)) - 1);
-        if (board.pieceBB[9] & behindMask) { mgScore -= 20; egScore -= 35; }
-        if (board.pieceBB[3] & behindMask) { mgScore += 10; egScore += 20; }
+        if (board.pieceBB[9] & behindMask) { mgScore -= g_Params.RookBehindFriendlyPassedPawnMg; egScore -= g_Params.RookBehindFriendlyPassedPawnEg; }
+        if (board.pieceBB[3] & behindMask) { mgScore -= g_Params.RookBehindEnemyPassedPawnMg; egScore -= g_Params.RookBehindEnemyPassedPawnEg; }
 
         // Dynamic King proximity bonus for Black passed pawn
         if (wkSq != -1 && bkSq != -1) {
             int wDist = kingDistance(wkSq, sq);
             int bDist = kingDistance(bkSq, sq);
-            egScore -= (wDist - bDist) * 25;
+            egScore -= (wDist - bDist) * g_Params.KingProximityToPassedPawnEg;
         }
     }
 
     // Center Space Control Pawn Occupation Heuristic
-    if (board.getPiece(35) == 1)  { mgScore += 15; } // White Pawn on d4
-    if (board.getPiece(36) == 1)  { mgScore += 15; } // White Pawn on e4
-    if (board.getPiece(27) == -1) { mgScore -= 15; } // Black Pawn on d5
-    if (board.getPiece(28) == -1) { mgScore -= 15; } // Black Pawn on e5
+    if (board.getPiece(35) == 1)  { mgScore += g_Params.CenterPawnOccupancyMg; } // White Pawn on d4
+    if (board.getPiece(36) == 1)  { mgScore += g_Params.CenterPawnOccupancyMg; } // White Pawn on e4
+    if (board.getPiece(27) == -1) { mgScore -= g_Params.CenterPawnOccupancyMg; } // Black Pawn on d5
+    if (board.getPiece(28) == -1) { mgScore -= g_Params.CenterPawnOccupancyMg; } // Black Pawn on e5
 
-    mgScore += __builtin_popcountll((rankMasks[2]|rankMasks[3]|rankMasks[4]) & wPawnAttacks & ~blackPawns & ~bPawnAttacks) * 4;
-    mgScore -= __builtin_popcountll((rankMasks[3]|rankMasks[4]|rankMasks[5]) & bPawnAttacks & ~whitePawns & ~wPawnAttacks) * 4;
+    mgScore += __builtin_popcountll((rankMasks[2]|rankMasks[3]|rankMasks[4]) & wPawnAttacks & ~blackPawns & ~bPawnAttacks) * g_Params.PawnAttacksCentralRanksMg;
+    mgScore -= __builtin_popcountll((rankMasks[3]|rankMasks[4]|rankMasks[5]) & bPawnAttacks & ~whitePawns & ~wPawnAttacks) * g_Params.PawnAttacksCentralRanksMg;
 
     for (int pType = 1; pType <= 5; ++pType) {
         uint64_t bb = board.pieceBB[pType];
         while (bb) {
             int sq = __builtin_ctzll(bb); bb &= bb - 1;
             if (Board::pawnAttacks[0][sq] & blackPawns) {
-                int pmg = (pType == 4) ? 100 : (pType == 3 ? 60 : 40), peg = (pType == 4) ? 80 : (pType == 3 ? 45 : 30);
-                mgScore -= pmg; egScore -= peg;
+                mgScore -= g_Params.PawnAttackingPieceMg[pType - 1];
+                egScore -= g_Params.PawnAttackingPieceEg[pType - 1];
             }
         }
         bb = board.pieceBB[pType + 6];
         while (bb) {
             int sq = __builtin_ctzll(bb); bb &= bb - 1;
             if (Board::pawnAttacks[1][sq] & whitePawns) {
-                int pmg = (pType == 4) ? 100 : (pType == 3 ? 60 : 40), peg = (pType == 4) ? 80 : (pType == 3 ? 45 : 30);
-                mgScore += pmg; egScore += peg;
+                mgScore += g_Params.PawnAttackingPieceMg[pType - 1];
+                egScore += g_Params.PawnAttackingPieceEg[pType - 1];
             }
         }
     }
@@ -501,112 +498,112 @@ int Lawliet::evaluateBoard(const Board& board, int alpha, int beta, const Search
     for (int f = 0; f < 8; ++f) {
         uint64_t fileMask = fileMasks[f];
         int wRooks = __builtin_popcountll(board.pieceBB[3] & fileMask);
-        if (wRooks >= 2) { mgScore += 16; egScore += 24; }
+        if (wRooks >= 2) { mgScore += g_Params.DoubledRooksOnFileMg; egScore += g_Params.DoubledRooksOnFileEg; }
         int bRooks = __builtin_popcountll(board.pieceBB[9] & fileMask);
-        if (bRooks >= 2) { mgScore -= 16; egScore -= 24; }
+        if (bRooks >= 2) { mgScore -= g_Params.DoubledRooksOnFileMg; egScore -= g_Params.DoubledRooksOnFileEg; }
     }
 
     // Advanced 7th/2nd rank Rook activity and doubled rooks on 7th/2nd rank
     int wRooksOn7th = __builtin_popcountll(board.pieceBB[3] & rankMasks[1]);
     if (wRooksOn7th > 0) {
         bool target = (board.pieceBB[11] & rankMasks[0]) || (board.pieceBB[6] & rankMasks[1]);
-        int bonusMg = target ? 45 : 20;
-        int bonusEg = target ? 60 : 30;
+        int bonusMg = target ? g_Params.RookOn7thRankWithTargetMg : g_Params.RookOn7thRankMg;
+        int bonusEg = target ? g_Params.RookOn7thRankWithTargetEg : g_Params.RookOn7thRankEg;
         mgScore += bonusMg * wRooksOn7th;
         egScore += bonusEg * wRooksOn7th;
-        if (wRooksOn7th >= 2) { mgScore += 35; egScore += 50; }
+        if (wRooksOn7th >= 2) { mgScore += g_Params.DoubledRooksOn7thRankMg; egScore += g_Params.DoubledRooksOn7thRankEg; }
     }
     int bRooksOn2nd = __builtin_popcountll(board.pieceBB[9] & rankMasks[6]);
     if (bRooksOn2nd > 0) {
         bool target = (board.pieceBB[5] & rankMasks[7]) || (board.pieceBB[0] & rankMasks[6]);
-        int bonusMg = target ? 45 : 20;
-        int bonusEg = target ? 60 : 30;
+        int bonusMg = target ? g_Params.RookOn7thRankWithTargetMg : g_Params.RookOn7thRankMg;
+        int bonusEg = target ? g_Params.RookOn7thRankWithTargetEg : g_Params.RookOn7thRankEg;
         mgScore -= bonusMg * bRooksOn2nd;
         egScore -= bonusEg * bRooksOn2nd;
-        if (bRooksOn2nd >= 2) { mgScore -= 35; egScore -= 50; }
+        if (bRooksOn2nd >= 2) { mgScore -= g_Params.DoubledRooksOn7thRankMg; egScore -= g_Params.DoubledRooksOn7thRankEg; }
     }
 
     uint64_t wr_pos = board.pieceBB[3];
     while (wr_pos) {
         int sq = __builtin_ctzll(wr_pos); wr_pos &= wr_pos - 1; uint64_t fMask = fileMasks[sq % 8];
-        if (!(allPawns & fMask)) { mgScore += 20; egScore += 30; }
-        else if (!(whitePawns & fMask)) { mgScore += 10; egScore += 15; }
+        if (!(allPawns & fMask)) { mgScore += g_Params.RookOnOpenFileMg; egScore += g_Params.RookOnOpenFileEg; }
+        else if (!(whitePawns & fMask)) { mgScore += g_Params.RookOnSemiOpenFileMg; egScore += g_Params.RookOnSemiOpenFileEg; }
     }
     uint64_t br_pos = board.pieceBB[9];
     while (br_pos) {
         int sq = __builtin_ctzll(br_pos); br_pos &= br_pos - 1; uint64_t fMask = fileMasks[sq % 8];
-        if (!(allPawns & fMask)) { mgScore -= 20; egScore -= 30; }
-        else if (!(blackPawns & fMask)) { mgScore -= 10; egScore -= 15; }
+        if (!(allPawns & fMask)) { mgScore -= g_Params.RookOnOpenFileMg; egScore -= g_Params.RookOnOpenFileEg; }
+        else if (!(blackPawns & fMask)) { mgScore -= g_Params.RookOnSemiOpenFileMg; egScore -= g_Params.RookOnSemiOpenFileEg; }
     }
 
     if (phase >= 12) {
         int wUnd = 0, bUnd = 0;
         if (board.getPiece(57) == 2) wUnd++; if (board.getPiece(58) == 3) wUnd++; if (board.getPiece(61) == 3) wUnd++; if (board.getPiece(62) == 2) wUnd++;
-        mgScore -= wUnd * 15;
+        mgScore -= wUnd * g_Params.UndevelopedMinorPenaltyMg;
         if (board.getPiece(1) == -2) bUnd++; if (board.getPiece(2) == -3) bUnd++; if (board.getPiece(5) == -3) bUnd++; if (board.getPiece(6) == -2) bUnd++;
-        mgScore += bUnd * 15;
+        mgScore += bUnd * g_Params.UndevelopedMinorPenaltyMg;
 
         uint64_t wq_pieces = board.pieceBB[4];
-        if (wq_pieces && __builtin_ctzll(wq_pieces) != 59) mgScore -= wUnd * 20;
+        if (wq_pieces && __builtin_ctzll(wq_pieces) != 59) mgScore -= wUnd * g_Params.UndevelopedQueenPenaltyMg;
         uint64_t bq_pieces = board.pieceBB[10];
-        if (bq_pieces && __builtin_ctzll(bq_pieces) != 3) mgScore += bUnd * 20;
+        if (bq_pieces && __builtin_ctzll(bq_pieces) != 3) mgScore += bUnd * g_Params.UndevelopedQueenPenaltyMg;
     }
 
-    // --- Dynamic Tapered Safe Mobility (Pinned check removed for high performance) ---
+    // --- Dynamic Tapered Safe Mobility ---
     uint64_t wn_mob = board.pieceBB[1];
     while (wn_mob) {
         int sq = __builtin_ctzll(wn_mob); wn_mob &= wn_mob - 1;
         int c = __builtin_popcountll(Board::knightAttacks[sq] & ~board.colorBB[0] & wSafe);
-        mgScore += c * 4; egScore += c * 4;
+        mgScore += g_Params.KnightMobilityMg[c]; egScore += g_Params.KnightMobilityEg[c];
     }
     uint64_t wb_mob = board.pieceBB[2];
     while (wb_mob) {
         int sq = __builtin_ctzll(wb_mob); wb_mob &= wb_mob - 1;
         int c = __builtin_popcountll(board.getBishopAttacks(sq, board.occ) & ~board.colorBB[0] & wSafe);
-        mgScore += c * 3; egScore += c * 3;
+        mgScore += g_Params.BishopMobilityMg[c]; egScore += g_Params.BishopMobilityEg[c];
     }
     uint64_t wr_mob = board.pieceBB[3];
     while (wr_mob) {
         int sq = __builtin_ctzll(wr_mob); wr_mob &= wr_mob - 1;
         int c = __builtin_popcountll(board.getRookAttacks(sq, board.occ) & ~board.colorBB[0] & wSafe);
-        mgScore += c * 2; egScore += c * 4;
+        mgScore += g_Params.RookMobilityMg[c]; egScore += g_Params.RookMobilityEg[c];
     }
     uint64_t wq_mob = board.pieceBB[4];
     while (wq_mob) {
         int sq = __builtin_ctzll(wq_mob); wq_mob &= wq_mob - 1;
         uint64_t attacks = board.getBishopAttacks(sq, board.occ) | board.getRookAttacks(sq, board.occ);
         int c = __builtin_popcountll(attacks & ~board.colorBB[0] & wSafe);
-        mgScore += c * 1; egScore += c * 2;
+        mgScore += g_Params.QueenMobilityMg[c]; egScore += g_Params.QueenMobilityEg[c];
     }
 
     uint64_t bn_mob = board.pieceBB[7];
     while (bn_mob) {
         int sq = __builtin_ctzll(bn_mob); bn_mob &= bn_mob - 1;
         int c = __builtin_popcountll(Board::knightAttacks[sq] & ~board.colorBB[1] & bSafe);
-        mgScore -= c * 4; egScore -= c * 4;
+        mgScore -= g_Params.KnightMobilityMg[c]; egScore -= g_Params.KnightMobilityEg[c];
     }
     uint64_t bb_mob = board.pieceBB[8];
     while (bb_mob) {
         int sq = __builtin_ctzll(bb_mob); bb_mob &= bb_mob - 1;
         int c = __builtin_popcountll(board.getBishopAttacks(sq, board.occ) & ~board.colorBB[1] & bSafe);
-        mgScore -= c * 3; egScore -= c * 3;
+        mgScore -= g_Params.BishopMobilityMg[c]; egScore -= g_Params.BishopMobilityEg[c];
     }
     uint64_t br_mob = board.pieceBB[9];
     while (br_mob) {
         int sq = __builtin_ctzll(br_mob); br_mob &= br_mob - 1;
-        int c = __builtin_popcountll(Board::getRookAttacks(sq, board.occ) & ~board.colorBB[1] & bSafe);
-        mgScore -= c * 2; egScore -= c * 4;
+        int c = __builtin_popcountll(board.getRookAttacks(sq, board.occ) & ~board.colorBB[1] & bSafe);
+        mgScore -= g_Params.RookMobilityMg[c]; egScore -= g_Params.RookMobilityEg[c];
     }
     uint64_t bq_mob = board.pieceBB[10];
     while (bq_mob) {
         int sq = __builtin_ctzll(bq_mob); bq_mob &= bq_mob - 1;
         uint64_t attacks = board.getBishopAttacks(sq, board.occ) | board.getRookAttacks(sq, board.occ);
         int c = __builtin_popcountll(attacks & ~board.colorBB[1] & bSafe);
-        mgScore -= c * 1; egScore -= c * 2;
+        mgScore -= g_Params.QueenMobilityMg[c]; egScore -= g_Params.QueenMobilityEg[c];
     }
 
-    uint64_t w_minors = board.pieceBB[1] | board.pieceBB[2]; while (w_minors) { int sq = __builtin_ctzll(w_minors); w_minors &= w_minors - 1; if (Board::pawnAttacks[1][sq] & whitePawns) { mgScore += 15; egScore += 10; } }
-    uint64_t b_minors = board.pieceBB[7] | board.pieceBB[8]; while (b_minors) { int sq = __builtin_ctzll(b_minors); b_minors &= b_minors - 1; if (Board::pawnAttacks[0][sq] & blackPawns) { mgScore -= 15; egScore -= 10; } }
+    uint64_t w_minors = board.pieceBB[1] | board.pieceBB[2]; while (w_minors) { int sq = __builtin_ctzll(w_minors); w_minors &= w_minors - 1; if (Board::pawnAttacks[1][sq] & whitePawns) { mgScore += g_Params.DefendedMinorBonusMg; egScore += g_Params.DefendedMinorBonusEg; } }
+    uint64_t b_minors = board.pieceBB[7] | board.pieceBB[8]; while (b_minors) { int sq = __builtin_ctzll(b_minors); b_minors &= b_minors - 1; if (Board::pawnAttacks[0][sq] & blackPawns) { mgScore -= g_Params.DefendedMinorBonusMg; egScore -= g_Params.DefendedMinorBonusEg; } }
 
     // Knight and Bishop Outposts
     uint64_t wn_pos_out = board.pieceBB[1];
@@ -619,8 +616,8 @@ int Lawliet::evaluateBoard(const Board& board, int alpha, int beta, const Search
                 bool attackable = false;
                 if (file > 0 && (sq - 9 >= 0) && (board.getPiece(sq - 9) == -1)) attackable = true;
                 if (file < 7 && (sq - 7 >= 0) && (board.getPiece(sq - 7) == -1)) attackable = true;
-                if (!attackable) { mgScore += 25; egScore += 15; }
-                else { mgScore += 10; egScore += 5; }
+                if (!attackable) { mgScore += g_Params.KnightOutpostUnattackableMg; egScore += g_Params.KnightOutpostUnattackableEg; }
+                else { mgScore += g_Params.KnightOutpostAttackableMg; egScore += g_Params.KnightOutpostAttackableEg; }
             }
         }
     }
@@ -634,7 +631,7 @@ int Lawliet::evaluateBoard(const Board& board, int alpha, int beta, const Search
                 bool attackable = false;
                 if (file > 0 && (sq - 9 >= 0) && (board.getPiece(sq - 9) == -1)) attackable = true;
                 if (file < 7 && (sq - 7 >= 0) && (board.getPiece(sq - 7) == -1)) attackable = true;
-                if (!attackable) { mgScore += 15; egScore += 10; }
+                if (!attackable) { mgScore += g_Params.BishopOutpostDefendedMg; egScore += g_Params.BishopOutpostDefendedEg; }
             }
         }
     }
@@ -648,8 +645,8 @@ int Lawliet::evaluateBoard(const Board& board, int alpha, int beta, const Search
                 bool attackable = false;
                 if (file > 0 && (sq + 7 < 64) && (board.getPiece(sq + 7) == 1)) attackable = true;
                 if (file < 7 && (sq + 9 < 64) && (board.getPiece(sq + 9) == 1)) attackable = true;
-                if (!attackable) { mgScore -= 25; egScore -= 15; }
-                else { mgScore -= 10; egScore -= 5; }
+                if (!attackable) { mgScore -= g_Params.KnightOutpostUnattackableMg; egScore -= g_Params.KnightOutpostUnattackableEg; }
+                else { mgScore -= g_Params.KnightOutpostAttackableMg; egScore -= g_Params.KnightOutpostAttackableEg; }
             }
         }
     }
@@ -663,7 +660,7 @@ int Lawliet::evaluateBoard(const Board& board, int alpha, int beta, const Search
                 bool attackable = false;
                 if (file > 0 && (sq + 7 < 64) && (board.getPiece(sq + 7) == 1)) attackable = true;
                 if (file < 7 && (sq + 9 < 64) && (board.getPiece(sq + 9) == 1)) attackable = true;
-                if (!attackable) { mgScore -= 15; egScore -= 10; }
+                if (!attackable) { mgScore -= g_Params.BishopOutpostDefendedMg; egScore -= g_Params.BishopOutpostDefendedEg; }
             }
         }
     }
@@ -672,24 +669,24 @@ int Lawliet::evaluateBoard(const Board& board, int alpha, int beta, const Search
     uint64_t w_minors_undef = board.pieceBB[1] | board.pieceBB[2];
     while (w_minors_undef) {
         int sq = __builtin_ctzll(w_minors_undef); w_minors_undef &= w_minors_undef - 1;
-        if (!(Board::pawnAttacks[1][sq] & whitePawns)) { mgScore -= 12; egScore -= 8; }
+        if (!(Board::pawnAttacks[1][sq] & whitePawns)) { mgScore += g_Params.UndefendedMinorPenaltyMg; egScore += g_Params.UndefendedMinorPenaltyEg; }
     }
     uint64_t b_minors_undef = board.pieceBB[7] | board.pieceBB[8];
     while (b_minors_undef) {
         int sq = __builtin_ctzll(b_minors_undef); b_minors_undef &= b_minors_undef - 1;
-        if (!(Board::pawnAttacks[0][sq] & blackPawns)) { mgScore += 12; egScore += 8; }
+        if (!(Board::pawnAttacks[0][sq] & blackPawns)) { mgScore -= g_Params.UndefendedMinorPenaltyMg; egScore -= g_Params.UndefendedMinorPenaltyEg; }
     }
 
     // King centralization in endgames
     if (wkSq != -1) {
         int r = wkSq / 8, f = wkSq % 8;
         int centerDist = std::abs(r - 3) + std::abs(f - 3);
-        egScore += (8 - centerDist) * 5;
+        egScore += (8 - centerDist) * g_Params.KingCentralizationEg;
     }
     if (bkSq != -1) {
         int r = bkSq / 8, f = bkSq % 8;
         int centerDist = std::abs(r - 3) + std::abs(f - 3);
-        egScore -= (8 - centerDist) * 5;
+        egScore -= (8 - centerDist) * g_Params.KingCentralizationEg;
     }
 
     if (wkSq != -1) {
@@ -700,10 +697,10 @@ int Lawliet::evaluateBoard(const Board& board, int alpha, int beta, const Search
             uint64_t filePawns = board.pieceBB[0] & fileMasks[file];
             if (!filePawns) {
                 bool open = !(board.pieceBB[6] & fileMasks[file]);
-                int penMg = open ? 60 : 40;
-                int penEg = open ? 20 : 15;
+                int penMg = open ? g_Params.KingFileOpenPenaltyMg : g_Params.KingFileSemiOpenPenaltyMg;
+                int penEg = open ? g_Params.KingFileOpenPenaltyEg : g_Params.KingFileSemiOpenPenaltyEg;
                 if (blackMajors & fileMasks[file]) {
-                    penMg += 25; penEg += 10;
+                    penMg += g_Params.KingFileEnemyMajorAttackPenaltyMg; penEg += g_Params.KingFileEnemyMajorAttackPenaltyEg;
                 }
                 mgScore -= penMg; egScore -= penEg;
             } else {
@@ -711,9 +708,9 @@ int Lawliet::evaluateBoard(const Board& board, int alpha, int beta, const Search
                 int r = closestPawnSq / 8;
                 int penMg = 0, penEg = 0;
                 if (r == 6) { penMg = 0; penEg = 0; }
-                else if (r == 5) { penMg = 10; penEg = 5; }
-                else if (r == 4) { penMg = 25; penEg = 10; }
-                else if (r <= 3) { penMg = 35; penEg = 15; }
+                else if (r == 5) { penMg = g_Params.KingPawnShieldDistancePenaltiesMg[0]; penEg = g_Params.KingPawnShieldDistancePenaltiesEg[0]; }
+                else if (r == 4) { penMg = g_Params.KingPawnShieldDistancePenaltiesMg[1]; penEg = g_Params.KingPawnShieldDistancePenaltiesEg[1]; }
+                else if (r <= 3) { penMg = g_Params.KingPawnShieldDistancePenaltiesMg[2]; penEg = g_Params.KingPawnShieldDistancePenaltiesEg[2]; }
                 mgScore -= penMg; egScore -= penEg;
             }
         }
@@ -724,14 +721,17 @@ int Lawliet::evaluateBoard(const Board& board, int alpha, int beta, const Search
                 int closestEnemyPawnSq = 63 - __builtin_clzll(enemyPawns);
                 int r = closestEnemyPawnSq / 8;
                 if (r >= 4) {
-                    int stormPen = (r == 4) ? 10 : ((r == 5) ? 25 : 50);
+                    int stormPen = 0;
+                    if (r == 4) stormPen = g_Params.PawnStormPenaltiesMg[0];
+                    else if (r == 5) stormPen = g_Params.PawnStormPenaltiesMg[1];
+                    else if (r >= 6) stormPen = g_Params.PawnStormPenaltiesMg[2];
                     mgScore -= stormPen;
                 }
             }
         }
 
         int r = wkSq / 8;
-        if (r < 6) mgScore -= (6 - r) * 25;
+        if (r < 6) mgScore -= (6 - r) * g_Params.KingSubRankPenaltyMg;
     } else {
         mgScore -= 120;
     }
@@ -744,10 +744,10 @@ int Lawliet::evaluateBoard(const Board& board, int alpha, int beta, const Search
             uint64_t filePawns = board.pieceBB[6] & fileMasks[file];
             if (!filePawns) {
                 bool open = !(board.pieceBB[0] & fileMasks[file]);
-                int penMg = open ? 60 : 40;
-                int penEg = open ? 20 : 15;
+                int penMg = open ? g_Params.KingFileOpenPenaltyMg : g_Params.KingFileSemiOpenPenaltyMg;
+                int penEg = open ? g_Params.KingFileOpenPenaltyEg : g_Params.KingFileSemiOpenPenaltyEg;
                 if (whiteMajors & fileMasks[file]) {
-                    penMg += 25; penEg += 10;
+                    penMg += g_Params.KingFileEnemyMajorAttackPenaltyMg; penEg += g_Params.KingFileEnemyMajorAttackPenaltyEg;
                 }
                 mgScore += penMg; egScore += penEg;
             } else {
@@ -755,9 +755,9 @@ int Lawliet::evaluateBoard(const Board& board, int alpha, int beta, const Search
                 int r = closestPawnSq / 8;
                 int penMg = 0, penEg = 0;
                 if (r == 1) { penMg = 0; penEg = 0; }
-                else if (r == 2) { penMg = 10; penEg = 5; }
-                else if (r == 3) { penMg = 25; penEg = 10; }
-                else if (r >= 4) { penMg = 35; penEg = 15; }
+                else if (r == 2) { penMg = g_Params.KingPawnShieldDistancePenaltiesMg[0]; penEg = g_Params.KingPawnShieldDistancePenaltiesEg[0]; }
+                else if (r == 3) { penMg = g_Params.KingPawnShieldDistancePenaltiesMg[1]; penEg = g_Params.KingPawnShieldDistancePenaltiesEg[1]; }
+                else if (r >= 4) { penMg = g_Params.KingPawnShieldDistancePenaltiesMg[2]; penEg = g_Params.KingPawnShieldDistancePenaltiesEg[2]; }
                 mgScore += penMg; egScore += penEg;
             }
         }
@@ -768,14 +768,17 @@ int Lawliet::evaluateBoard(const Board& board, int alpha, int beta, const Search
                 int closestEnemyPawnSq = __builtin_ctzll(enemyPawns);
                 int r = closestEnemyPawnSq / 8;
                 if (r <= 3) {
-                    int stormPen = (r == 3) ? 10 : ((r == 2) ? 25 : 50);
+                    int stormPen = 0;
+                    if (r == 3) stormPen = g_Params.PawnStormPenaltiesMg[0];
+                    else if (r == 2) stormPen = g_Params.PawnStormPenaltiesMg[1];
+                    else if (r <= 1) stormPen = g_Params.PawnStormPenaltiesMg[2];
                     mgScore += stormPen;
                 }
             }
         }
 
         int r = bkSq / 8;
-        if (r > 1) mgScore += (r - 1) * 25;
+        if (r > 1) mgScore += (r - 1) * g_Params.KingSubRankPenaltyMg;
     } else {
         mgScore += 120;
     }
@@ -787,34 +790,34 @@ int Lawliet::evaluateBoard(const Board& board, int alpha, int beta, const Search
     if (phase >= 6) {
         if (wkSq != -1) {
             uint64_t bn = board.pieceBB[7];
-            while (bn) { int sq = __builtin_ctzll(bn); bn &= bn - 1; if (Board::knightAttacks[sq] & wKingZone) wKingDanger += 2; }
+            while (bn) { int sq = __builtin_ctzll(bn); bn &= bn - 1; if (Board::knightAttacks[sq] & wKingZone) wKingDanger += g_Params.KingZoneAttackWeightKnight; }
             uint64_t bb = board.pieceBB[8];
-            while (bb) { int sq = __builtin_ctzll(bb); bb &= bb - 1; if (board.getBishopAttacks(sq, board.occ) & wKingZone) wKingDanger += 2; }
+            while (bb) { int sq = __builtin_ctzll(bb); bb &= bb - 1; if (board.getBishopAttacks(sq, board.occ) & wKingZone) wKingDanger += g_Params.KingZoneAttackWeightBishop; }
             uint64_t br = board.pieceBB[9];
-            while (br) { int sq = __builtin_ctzll(br); br &= br - 1; if (Board::getRookAttacks(sq, board.occ) & wKingZone) wKingDanger += 3; }
+            while (br) { int sq = __builtin_ctzll(br); br &= br - 1; if (Board::getRookAttacks(sq, board.occ) & wKingZone) wKingDanger += g_Params.KingZoneAttackWeightRook; }
             uint64_t bq = board.pieceBB[10];
-            while (bq) { int sq = __builtin_ctzll(bq); bq &= bq - 1; uint64_t q_attacks = board.getBishopAttacks(sq, board.occ) | board.getRookAttacks(sq, board.occ); if (q_attacks & wKingZone) wKingDanger += 4; }
-            if (wKingDanger > 2) mgScore -= (wKingDanger * wKingDanger) * 2;
+            while (bq) { int sq = __builtin_ctzll(bq); bq &= bq - 1; uint64_t q_attacks = board.getBishopAttacks(sq, board.occ) | board.getRookAttacks(sq, board.occ); if (q_attacks & wKingZone) wKingDanger += g_Params.KingZoneAttackWeightQueen; }
+            if (wKingDanger > 2) mgScore -= (wKingDanger * wKingDanger) * g_Params.KingDangerScaleMg;
         }
         if (bkSq != -1) {
             uint64_t wn = board.pieceBB[1];
-            while (wn) { int sq = __builtin_ctzll(wn); wn &= wn - 1; if (Board::knightAttacks[sq] & bKingZone) bKingDanger += 2; }
+            while (wn) { int sq = __builtin_ctzll(wn); wn &= wn - 1; if (Board::knightAttacks[sq] & bKingZone) bKingDanger += g_Params.KingZoneAttackWeightKnight; }
             uint64_t wb = board.pieceBB[2];
-            while (wb) { int sq = __builtin_ctzll(wb); wb &= wb - 1; if (board.getBishopAttacks(sq, board.occ) & bKingZone) bKingDanger += 2; }
+            while (wb) { int sq = __builtin_ctzll(wb); wb &= wb - 1; if (board.getBishopAttacks(sq, board.occ) & bKingZone) bKingDanger += g_Params.KingZoneAttackWeightBishop; }
             uint64_t wr = board.pieceBB[3];
-            while (wr) { int sq = __builtin_ctzll(wr); wr &= wr - 1; if (Board::getRookAttacks(sq, board.occ) & bKingZone) bKingDanger += 3; }
+            while (wr) { int sq = __builtin_ctzll(wr); wr &= wr - 1; if (Board::getRookAttacks(sq, board.occ) & bKingZone) bKingDanger += g_Params.KingZoneAttackWeightRook; }
             uint64_t wq = board.pieceBB[4];
-            while (wq) { int sq = __builtin_ctzll(wq); wq &= wq - 1; uint64_t q_attacks = board.getBishopAttacks(sq, board.occ) | board.getRookAttacks(sq, board.occ); if (q_attacks & bKingZone) bKingDanger += 4; }
-            if (bKingDanger > 2) mgScore += (bKingDanger * bKingDanger) * 2;
+            while (wq) { int sq = __builtin_ctzll(wq); wq &= wq - 1; uint64_t q_attacks = board.getBishopAttacks(sq, board.occ) | board.getRookAttacks(sq, board.occ); if (q_attacks & bKingZone) bKingDanger += g_Params.KingZoneAttackWeightQueen; }
+            if (bKingDanger > 2) mgScore += (bKingDanger * bKingDanger) * g_Params.KingDangerScaleMg;
         }
     }
 
     // --- Positional planning, development and castling rights ---
     if (phase >= 12) {
-        if (board.castleWK) mgScore += 15;
-        if (board.castleWQ) mgScore += 10;
-        if (board.castleBK) mgScore -= 15;
-        if (board.castleBQ) mgScore -= 10;
+        if (board.castleWK) mgScore += g_Params.CastleWKMg;
+        if (board.castleWQ) mgScore += g_Params.CastleWQMg;
+        if (board.castleBK) mgScore -= g_Params.CastleWKMg;
+        if (board.castleBQ) mgScore -= g_Params.CastleWQMg;
     }
 
     if (phase >= 16) {
@@ -848,7 +851,7 @@ int Lawliet::evaluateBoard(const Board& board, int alpha, int beta, const Search
 
     int finalScore = ((mgScore * phase) + (egScore * (24 - phase))) / 24;
     int relativeScore = (board.turn == Board::WHITE) ? finalScore : -finalScore;
-    return relativeScore + 15; // 15 cp Tempo Bonus
+    return relativeScore + g_Params.TempoBonus; // Tempo Bonus
 }
 
 void Lawliet::generateLegalMoves(const Board& board, int color, Move* out, int& count) const {
@@ -1311,7 +1314,7 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
 
     int bestScore = -INF; Move bestMove{}; TTFlag flag = TT_ALPHA;
     int movesSearched = 0;      // Tracks moves sent to negamax evaluation
-    int legalMovesSearched = 0; // NEW: Tracks truly legal moves to detect mate/stalemate
+    int legalMovesSearched = 0; // Tracks truly legal moves to detect mate/stalemate
 
     for (int i = 0; i < ctx.moveCounts[ply]; ++i) {
         if (tm.shouldStop()) return 0;
@@ -1330,8 +1333,7 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
 
         doMove(board, m, hash, ctx);
 
-        // NEW: Fast legality check post-move.
-        // Because turn is flipped in doMove, we check if the side that just moved is in check
+        // Fast legality check post-move.
         if (board.isInCheck(-board.turn)) {
             undoMove(board, m, hash, ctx);
             continue; // Skip this illegal pseudo-legal move
@@ -1345,11 +1347,10 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
             if (seeScore < -17 * depth * depth) {
                 undoMove(board, m, hash, ctx);
                 continue;
-                }
-                }
+            }
+        }
 
         // Safe Late Move Pruning and Futility Pruning after doMove
-        // Note: Using movesSearched here since pruning choices rely on position in the ordered queue
         if (depth <= 4 && !inCheck && isQuiet && !givesCheck && movesSearched >= maxMoves) {
             undoMove(board, m, hash, ctx);
             continue;
@@ -1485,9 +1486,7 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
         }
     }
 
-    // NEW: Proper end of node verification
-    // If absolutely zero pseudo-legal moves passed our post-move legality check,
-    // the position is terminal. Check for checkmate vs. stalemate.
+    // Proper end of node verification
     if (legalMovesSearched == 0) {
         return inCheck ? (-INF + ply) : 0;
     }
@@ -1520,7 +1519,9 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
     return bestScore;
 }
 
-std::string Lawliet::squareToUci(int sq) { return std::string(1, 'a' + (sq % 8)) + std::string(1, '1' + (7 - sq / 8)); }
+std::string Lawliet::squareToUci(int sq) {
+    return std::string(1, 'a' + (sq % 8)) + std::string(1, '8' - (sq / 8));
+}
 
 std::string Lawliet::extractPv(Board& board, uint64_t hash) {
     std::string pv = ""; Board temp = board; uint64_t h = hash;
@@ -1618,7 +1619,7 @@ Move Lawliet::think(Board& board, TimeManager& tm) {
     for (int i = 1; i < numThreads; ++i) workers.push_back(std::thread(&Lawliet::searchWorker, this, board, std::ref(tm), i, std::ref(threadBestMoves[i])));
     auto masterCtx = std::make_unique<SearchContext>(); Move bestMove = thinkThread(board, tm, *masterCtx, 0);
 
-    // CRITICAL: We must stop the timer to signal all helper threads to exit immediately!
+    // CRITICAL: Stop timer to signal helper threads
     tm.stop();
 
     for (auto& t : workers) { if (t.joinable()) t.join(); }
@@ -1631,7 +1632,7 @@ Move Lawliet::think(Board& board, TimeManager& tm) {
 }
 
 Move Lawliet::thinkThread(Board& board, TimeManager& tm, SearchContext& ctx, int threadId) {
-    ctx.threadId = threadId; // Set threadId in context!
+    ctx.threadId = threadId;
     {
         Board tempBoard = board;
         std::vector<uint64_t> historyHashes;
@@ -1651,7 +1652,7 @@ Move Lawliet::thinkThread(Board& board, TimeManager& tm, SearchContext& ctx, int
     generateLegalMoves(board, board.turn, ctx.moveBuffers[0], ctx.moveCounts[0]);
     if (ctx.moveCounts[0] == 0) return Move{};
 
-    // Find the first fully legal move as the fallback to prevent illegal move leaks
+    // Fallback search
     Move bestMove{};
     for (int i = 0; i < ctx.moveCounts[0]; ++i) {
         if (board.leavesKingInCheck(ctx.moveBuffers[0][i].fromSquare, ctx.moveBuffers[0][i].toSquare, std::abs(ctx.moveBuffers[0][i].promotionPiece))) {
@@ -1690,7 +1691,6 @@ Move Lawliet::thinkThread(Board& board, TimeManager& tm, SearchContext& ctx, int
     int originalAllocatedTimeMs = tm.allocatedTimeMs.load(); uint64_t hash = computeHash(board);
     int lastScore = 0; const int effMaxDepth = maxDepth;
 
-    // Fully verifies move legality against checks and pins prior to execution
     auto validateMove = [&](const Move& m) {
         if (m.fromSquare == m.toSquare) return false;
         bool found = false;
@@ -1709,7 +1709,6 @@ Move Lawliet::thinkThread(Board& board, TimeManager& tm, SearchContext& ctx, int
     int startingDepth = threadId > 0 ? 1 + (threadId % 2) : 1;
     int prevScore = 0;
 
-    // TT Age incrementation on master thread startup
     if (threadId == 0) {
         ttAge = (ttAge + 1) & 63;
     }
@@ -1719,7 +1718,6 @@ Move Lawliet::thinkThread(Board& board, TimeManager& tm, SearchContext& ctx, int
         ctx.rootBestMove = Move{};
         prevScore = lastScore;
 
-        // Fixed Aspiration Bounds with Gradual Widening
         int alpha = -INF;
         int beta = INF;
         int window = 45;

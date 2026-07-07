@@ -112,7 +112,7 @@ struct SearchContext {
     // Continuation History Heuristic: quiet history based on the previous piece's movement
     int continuationHistory[12][64]{};
 
-    // Static Evaluation Correction History (CorrHist): learns and refines evaluation biases
+    // Static Evaluation Correction History (CorrHist)
     int corrHist[2][16384]{};
 
     // Bounded Repetition Detection Hash Stack
@@ -230,7 +230,6 @@ private:
     uint64_t getPinnedPieces(const Board& board, int kingSq, int friendlyColor) const;
 
     uint64_t computeHash(const Board& board) const;
-    int evaluateBoard(const Board& board, int alpha = -INF, int beta = INF, const SearchContext* ctx = nullptr) const;
     void generateLegalMoves(const Board& board, int color, Move* out, int& count) const;
     void generateCaptures(const Board& board, int color, Move* out, int& count) const;
     void doMove(Board& board, Move& m, uint64_t& hash, SearchContext& ctx);
@@ -259,4 +258,5 @@ public:
 
     Move think(Board& board);
     Move think(Board& board, TimeManager& tm);
+    int evaluateBoard(const Board& board, int alpha = -INF, int beta = INF, const SearchContext* ctx = nullptr) const;
 };

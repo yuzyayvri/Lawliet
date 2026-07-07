@@ -12,6 +12,25 @@ uint64_t Board::pawnAttacks[2][64];
 uint64_t Board::rayMasks[64][8];
 bool Board::tablesInitialized = false;
 
+int Board::pawnTableMidgame[64] = {0};
+int Board::knightTableMidgame[64] = {0};
+int Board::bishopTableMidgame[64] = {0};
+int Board::rookTableMidgame[64] = {0};
+int Board::queenTableMidgame[64] = {0};
+int Board::kingTableMidgame[64] = {0};
+int Board::pawnTableEndgame[64] = {0};
+int Board::knightTableEndgame[64] = {0};
+int Board::bishopTableEndgame[64] = {0};
+int Board::rookTableEndgame[64] = {0};
+int Board::queenTableEndgame[64] = {0};
+int Board::kingTableEndgame[64] = {0};
+
+int Board::pieceValuesMidgame[6] = {0};
+int Board::pieceValuesEndgame[6] = {0};
+
+const int* Board::pstMidgame[6] = {nullptr};
+const int* Board::pstEndgame[6] = {nullptr};
+
 Board::Board() {
     // Explicitly zero-initialize raw arrays and primitives to prevent garbage evaluations
     std::memset(pieceBB, 0, sizeof(pieceBB));
@@ -24,12 +43,49 @@ Board::Board() {
     mgPst = 0;
     egPst = 0;
 
+    loadParams();
     initAttackTables();
     reset();
 }
 
 void Board::reset() {
     loadFen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+}
+
+void Board::loadParams() {
+    for (int i = 0; i < 5; ++i) {
+        pieceValuesMidgame[i] = g_Params.pieceValuesMidgame[i];
+        pieceValuesEndgame[i] = g_Params.pieceValuesEndgame[i];
+    }
+    pieceValuesMidgame[5] = 20000;
+    pieceValuesEndgame[5] = 20000;
+
+    std::memcpy(pawnTableMidgame, g_Params.pawnTableMidgame, sizeof(pawnTableMidgame));
+    std::memcpy(pawnTableEndgame, g_Params.pawnTableEndgame, sizeof(pawnTableEndgame));
+    std::memcpy(knightTableMidgame, g_Params.knightTableMidgame, sizeof(knightTableMidgame));
+    std::memcpy(knightTableEndgame, g_Params.knightTableEndgame, sizeof(knightTableEndgame));
+    std::memcpy(bishopTableMidgame, g_Params.bishopTableMidgame, sizeof(bishopTableMidgame));
+    std::memcpy(bishopTableEndgame, g_Params.bishopTableEndgame, sizeof(bishopTableEndgame));
+    std::memcpy(rookTableMidgame, g_Params.rookTableMidgame, sizeof(rookTableMidgame));
+    std::memcpy(rookTableEndgame, g_Params.rookTableEndgame, sizeof(rookTableEndgame));
+    std::memcpy(queenTableMidgame, g_Params.queenTableMidgame, sizeof(queenTableMidgame));
+    std::memcpy(queenTableEndgame, g_Params.queenTableEndgame, sizeof(queenTableEndgame));
+    std::memcpy(kingTableMidgame, g_Params.kingTableMidgame, sizeof(kingTableMidgame));
+    std::memcpy(kingTableEndgame, g_Params.kingTableEndgame, sizeof(kingTableEndgame));
+
+    pstMidgame[0] = pawnTableMidgame;
+    pstMidgame[1] = knightTableMidgame;
+    pstMidgame[2] = bishopTableMidgame;
+    pstMidgame[3] = rookTableMidgame;
+    pstMidgame[4] = queenTableMidgame;
+    pstMidgame[5] = kingTableMidgame;
+
+    pstEndgame[0] = pawnTableEndgame;
+    pstEndgame[1] = knightTableEndgame;
+    pstEndgame[2] = bishopTableEndgame;
+    pstEndgame[3] = rookTableEndgame;
+    pstEndgame[4] = queenTableEndgame;
+    pstEndgame[5] = kingTableEndgame;
 }
 
 bool Board::loadFen(const std::string& fen) {
@@ -111,6 +167,7 @@ bool Board::loadFen(const std::string& fen) {
         }
     }
 
+    loadParams();
     return true;
 }
 
@@ -252,102 +309,6 @@ uint64_t Board::getBishopAttacks(int sq, uint64_t occ) {
 
     return attacks;
 }
-
-const int Board::pawnTableMidgame[64] = {
-    0,  0,  0,  0,  0,  0,  0,  0, 100,100, 92, 98, 98, 92,100,100,
-    -7,  3, 26, 34, 34, 26,  3, -7, -37, -2,-11,  5,  5,-11, -2,-37,
-    -43,-14,-20, -1, -1,-20,-14,-43, -36, -5,-17,-19,-19,-17, -5,-36,
-    -45, -2,-18,-36,-36,-18, -2,-45, 0,  0,  0,  0,  0,  0,  0,  0
-};
-
-const int Board::knightTableMidgame[64] = {
-    -100,-86,-80,  3,  3,-80,-86,-100, -67,-32, 55, 14, 14, 55,-32,-67,
-    -13, 55, 49, 70, 70, 49, 55,-13, 4, 10, 32, 33, 33, 32, 10,  4,
-    -18,  6, 10, 10, 10, 10,  6,-18, -23,  1,  9,  7,  7,  9,  1,-23,
-    -29,-45, -9, -7, -7, -9,-45,-29, -68,-23,-46,-33,-33,-46,-23,-68
-};
-
-const int Board::bishopTableMidgame[64] = {
-    -23, -2,-60,-51,-51,-60, -2,-23, -40, 15, 12,  9,  9, 12, 15,-40,
-    -8, 41, 46, 42, 42, 46, 41, -8, 1,  6, 30, 47, 47, 30,  6,  1,
-    -2, 13, 15, 30, 30, 15, 13, -2, 8, 19, 24, 17, 17, 24, 19,  8,
-    9, 28, 18,  6,  6, 18, 28,  9, -28, -7, -9,-19,-19, -9, -7,-28
-};
-
-const int Board::rookTableMidgame[64] = {
-    15, 20, 20, 25, 25, 20, 20, 15, 20, 25, 25, 30, 30, 25, 25, 20,
-    5, 10, 15, 20, 20, 15, 10,  5, -10, -5,  5, 10, 10,  5, -5,-10,
-    -20,-10,  0,  5,  5,  0,-10,-20, -25,-15, -5,  0,  0, -5,-15,-25,
-    -30,-20,-10, -5, -5,-10,-20,-30, -15,-10,  0, 10, 10,  0,-10,-15
-};
-
-const int Board::queenTableMidgame[64] = {
-    -10, -5, -5, -5, -5, -5, -5,-10,  -5,  0,  0,  0,  0,  0,  0, -5,
-    -5,  0,  5,  5,  5,  5,  0, -5,  -5,  0,  5, 10, 10,  5,  0, -5,
-    -5,  0,  5, 10, 10,  5,  0, -5,  -5,  0,  5,  5,  5,  5,  0, -5,
-    -10, -5,  5,  5,  5,  5, -5,-10, -10, -5, -5,  5,  5, -5, -5,-10
-};
-
-const int Board::kingTableMidgame[64] = {
-    -5, 10, 10,-13,-13, 10, 10, -5, 0,  3, 10,  0,  0, 10,  3,  0,
-    17, 10, 10,-12,-12, 10, 10, 17, -36, -4, -7,-26,-26, -7, -4,-36,
-    -63,-27,-48,-85,-85,-48,-27,-63, -14, -4,-35,-57,-57,-35, -4,-14,
-    43, 32,-15,-45,-45,-15, 32, 43, 47, 60,  1, 29, 29,  1, 60, 47
-};
-
-const int Board::pawnTableEndgame[64] = {
-    0,  0,  0,  0,  0,  0,  0,  0, 130,130,128,117,117,128,130,130,
-    77, 84, 56, 48, 48, 56, 84, 77, 18, 11,  0,-10,-10,  0, 11, 18,
-    -2, -3,-14,-18,-18,-14, -3, -2, -10, -7,-15, -8, -8,-15, -7,-10,
-    -4, -4, -2,  2,  2, -2, -4, -4, 0,  0,  0,  0,  0,  0,  0,  0
-};
-
-const int Board::knightTableEndgame[64] = {
-    -100,-59,-32,-50,-50,-32,-59,-100, -48,-30,-46,-24,-24,-46,-30,-48,
-    -51,-40,-15,-21,-21,-15,-40,-51, -37,-15, -3,  2,  2, -3,-15,-37,
-    -38,-21, -3,  2,  2, -3,-21,-38, -44,-31,-24, -9, -9,-24,-31,-44,
-    -62,-38,-34,-25,-25,-34,-38,-62, -65,-75,-38,-38,-38,-38,-75,-65
-};
-
-const int Board::bishopTableEndgame[64] = {
-    -29,-29,-18,-13,-13,-18,-29,-29, -17,-17,-13,-19,-19,-13,-17,-17,
-    -10,-20,-12,-17,-17,-12,-20,-10, -13, -5, -3, -4, -4, -3, -5,-13,
-    -19,-13, -3,  0,  0, -3,-13,-19, -26,-18, -9, -2, -2, -9,-18,-26,
-    -35,-32,-21,-10,-10,-21,-32,-35, -32,-22,-36,-17,-17,-36,-22,-32
-};
-
-const int Board::rookTableEndgame[64] = {
-    8,  3, 15, 10, 10, 15,  3,  8, 4,  7,  2,  1,  1,  2,  7,  4,
-    4,  0,  0,  3,  3,  0,  0,  4, 7,  3,  8,  0,  0,  8,  3,  7,
-    1,  2,  5,  1,  1,  5,  2,  1, -3, -1, -6, -3, -3, -6, -1, -3,
-    0, -7, -1, -1, -1, -1, -7,  0, -12,  5,  2, -1, -1,  2,  5,-12
-};
-
-const int Board::queenTableEndgame[64] = {
-    -4,  8, 13, 18, 18, 13,  8, -4, -16, 29, 25, 49, 49, 25, 29,-16,
-    -23,-10, 20, 50, 50, 20,-10,-23, 6, 42, 27, 52, 52, 27, 42,  6,
-    -11, 28, 23, 43, 43, 23, 28,-11, -9,-27, 11,  3,  3, 11,-27, -9,
-    -31,-37,-46,-19,-19,-46,-37,-31, -48,-38,-33,-50,-50,-33,-38,-48
-};
-
-const int Board::kingTableEndgame[64] = {
-    -38,-18,-11,-22,-22,-11,-18,-38, -6, 11, 15,  6,  6, 15, 11, -6,
-    -1, 24, 24,  9,  9, 24, 24, -1, -6, 15, 20, 20, 20, 20, 15, -6,
-    -14,  0, 19, 29, 29, 19,  0,-14, -18, -4, 11, 21, 21, 11, -4,-18,
-    -37,-21,  0,  9,  9,  0,-21,-37, -70,-47,-26,-42,-42,-26,-47,-70
-};
-
-const int Board::pieceValuesMidgame[6] = {100, 325, 330, 500, 975, 20000};
-const int Board::pieceValuesEndgame[6] = {100, 320, 325, 510, 950, 20000};
-
-const int* Board::pstMidgame[6] = {
-    Board::pawnTableMidgame, Board::knightTableMidgame, Board::bishopTableMidgame,
-    Board::rookTableMidgame, Board::queenTableMidgame, Board::kingTableMidgame
-};
-const int* Board::pstEndgame[6] = {
-    Board::pawnTableEndgame, Board::knightTableEndgame, Board::bishopTableEndgame,
-    Board::rookTableEndgame, Board::queenTableEndgame, Board::kingTableEndgame
-};
 
 bool Board::isColorMatch(int square, int color) const {
     uint64_t bit = 1ULL << square;

@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cmath>
 #include <algorithm>
+#include "parameters.hpp"
 
 struct Move {
     int fromSquare = -1;
@@ -91,22 +92,23 @@ public:
     static void initAttackTables();
     static uint64_t getRookAttacks(int sq, uint64_t occ);
     static uint64_t getBishopAttacks(int sq, uint64_t occ);
+    void loadParams();
 
-    static const int pawnTableMidgame[64];
-    static const int knightTableMidgame[64];
-    static const int bishopTableMidgame[64];
-    static const int rookTableMidgame[64];
-    static const int queenTableMidgame[64];
-    static const int kingTableMidgame[64];
-    static const int pawnTableEndgame[64];
-    static const int knightTableEndgame[64];
-    static const int bishopTableEndgame[64];
-    static const int rookTableEndgame[64];
-    static const int queenTableEndgame[64];
-    static const int kingTableEndgame[64];
+    static int pawnTableMidgame[64];
+    static int knightTableMidgame[64];
+    static int bishopTableMidgame[64];
+    static int rookTableMidgame[64];
+    static int queenTableMidgame[64];
+    static int kingTableMidgame[64];
+    static int pawnTableEndgame[64];
+    static int knightTableEndgame[64];
+    static int bishopTableEndgame[64];
+    static int rookTableEndgame[64];
+    static int queenTableEndgame[64];
+    static int kingTableEndgame[64];
 
-    static const int pieceValuesMidgame[6];
-    static const int pieceValuesEndgame[6];
+    static int pieceValuesMidgame[6];
+    static int pieceValuesEndgame[6];
 
     static const int* pstMidgame[6];
     static const int* pstEndgame[6];
