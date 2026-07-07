@@ -362,7 +362,7 @@ int Lawliet::evaluateBoard(const Board& board, int alpha, int beta, const Search
             if (__builtin_popcountll(blackPawns & fileMasks[file]) > 1) { pawnMg -= g_Params.DoubledPawnMg; pawnEg -= g_Params.DoubledPawnEg; }
             if (!(blackPawns & pawnIsolatedMask[sq])) { pawnMg -= g_Params.IsolatedPawnMg; pawnEg -= g_Params.IsolatedPawnEg; }
             if (rank >= 2 && rank <= 5) {
-                uint64_t ranksBehind = (1ULL << (rank * 8)) - 1;
+                uint64_t ranksBehind = (1ULL << ((rank + 1) * 8)) - 1;
                 if (!(pawnIsolatedMask[sq] & blackPawns & ranksBehind) && (Board::pawnAttacks[1][sq + 8] & whitePawns)) { pawnMg -= g_Params.BackwardPawnMg; pawnEg -= g_Params.BackwardPawnEg; }
             }
 
@@ -417,7 +417,6 @@ int Lawliet::evaluateBoard(const Board& board, int alpha, int beta, const Search
                     }
                 }
                 if (connectedPasser) {
-                    int rMapped = 7 - rank;
                     pawnMg -= (g_Params.ConnectedPassedPawnMgBase + rank * g_Params.ConnectedPassedPawnMgFactor);
                     pawnEg -= (g_Params.ConnectedPassedPawnEgBase + rank * g_Params.ConnectedPassedPawnEgFactor);
                 }
@@ -680,13 +679,17 @@ int Lawliet::evaluateBoard(const Board& board, int alpha, int beta, const Search
     // King centralization in endgames
     if (wkSq != -1) {
         int r = wkSq / 8, f = wkSq % 8;
-        int centerDist = std::abs(r - 3) + std::abs(f - 3);
-        egScore += (8 - centerDist) * g_Params.KingCentralizationEg;
+        int dist_r = r < 4 ? 3 - r : r - 4;
+        int dist_f = f < 4 ? 3 - f : f - 4;
+        int centerDist = dist_r + dist_f;
+        egScore += (6 - centerDist) * g_Params.KingCentralizationEg;
     }
     if (bkSq != -1) {
         int r = bkSq / 8, f = bkSq % 8;
-        int centerDist = std::abs(r - 3) + std::abs(f - 3);
-        egScore -= (8 - centerDist) * g_Params.KingCentralizationEg;
+        int dist_r = r < 4 ? 3 - r : r - 4;
+        int dist_f = f < 4 ? 3 - f : f - 4;
+        int centerDist = dist_r + dist_f;
+        egScore -= (6 - centerDist) * g_Params.KingCentralizationEg;
     }
 
     if (wkSq != -1) {
