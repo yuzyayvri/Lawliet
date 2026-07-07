@@ -120,7 +120,7 @@ struct SearchContext {
     int hashStackIdx = 0;
     int rootLastIrreversible = 0;
 
-    // Thread-local Pawn Hash Table (PHT) to ensure 100% thread-safety
+    // Thread-local Pawn Hash Table (PHT) to ensure thread-safety
     mutable PawnEntry pawnTable[16384]{};
 
     // Search buffers to minimize heap allocations per thread
@@ -153,25 +153,28 @@ private:
     static constexpr int MAX_QDEPTH = 64;
     static constexpr int MAX_TOTAL_PLY = MAX_PLY + MAX_QDEPTH + 10;
 
-    // Transposition Table: Shared, lock-free generational cache (~67MB footprint)
+    // Transposition Table: Shared, lock-free generational cache (~128MB footprint)
     static constexpr int TT_SIZE = 1 << 23;
     static constexpr int PAWN_SIZE = 16384; // Compact and L1/L2 cache-friendly size
 
     enum TTFlag : uint8_t { TT_EXACT = 0, TT_ALPHA = 1, TT_BETA = 2 };
     struct TTEntry {
-        std::atomic<uint64_t> data{0}; // Key signature and move data merged into a single word
+        std::atomic<uint64_t> key{0};
+        std::atomic<uint64_t> data{0};
 
-        TTEntry() : data(0) {}
+        TTEntry() : key(0), data(0) {}
         TTEntry(const TTEntry& other) {
+            key.store(other.key.load(std::memory_order_relaxed), std::memory_order_relaxed);
             data.store(other.data.load(std::memory_order_relaxed), std::memory_order_relaxed);
         }
         TTEntry& operator=(const TTEntry& other) {
+            key.store(other.key.load(std::memory_order_relaxed), std::memory_order_relaxed);
             data.store(other.data.load(std::memory_order_relaxed), std::memory_order_relaxed);
             return *this;
         }
     };
 
-    uint8_t ttAge = 0; // Age key for deep/generational replacement strategy
+    std::atomic<uint8_t> ttAge{0}; // Age key for deep/generational replacement strategy
 
     static uint64_t fileMasks[8];
     static uint64_t rankMasks[8];
@@ -202,27 +205,25 @@ private:
     static int scoreFromTT(int score, int ply);
 
     // Packs search depth, flag, move squares, and age into a single 64-bit value
-    static inline uint64_t packData(int score, int depth, uint8_t flag, uint16_t fromSq, uint16_t toSq, int16_t promo, uint8_t age, uint16_t keySig) {
-        uint64_t s = static_cast<uint16_t>(score); // Bits 0-15
-        uint64_t d = static_cast<uint64_t>(std::clamp(depth, 0, 255)) << 16; // Bits 16-23
-        uint64_t flg = static_cast<uint64_t>(flag & 3) << 24; // Bits 24-25
-        uint64_t fSq = static_cast<uint64_t>(fromSq & 0x3F) << 26; // Bits 26-31
-        uint64_t tSq = static_cast<uint64_t>(toSq & 0x3F) << 32; // Bits 32-37
-        uint64_t p = static_cast<uint64_t>((promo + 8) & 0xF) << 38; // Bits 38-41
-        uint64_t a = static_cast<uint64_t>(age & 0x3F) << 42; // Bits 42-47
-        uint64_t kSig = static_cast<uint64_t>(keySig) << 48; // Bits 48-63
-        return s | d | flg | fSq | tSq | p | a | kSig;
+    static inline uint64_t packData(int score, int depth, uint8_t flag, uint16_t fromSq, uint16_t toSq, int16_t promo, uint8_t age) {
+        uint64_t s = static_cast<uint32_t>(score); // Bits 0-31
+        uint64_t d = static_cast<uint64_t>(std::clamp(depth, 0, 255)) << 32; // Bits 32-39
+        uint64_t flg = static_cast<uint64_t>(flag & 3) << 40; // Bits 40-41
+        uint64_t fSq = static_cast<uint64_t>(fromSq & 0x3F) << 42; // Bits 42-47
+        uint64_t tSq = static_cast<uint64_t>(toSq & 0x3F) << 48; // Bits 48-53
+        uint64_t p = static_cast<uint64_t>((promo + 8) & 0xF) << 54; // Bits 54-57
+        uint64_t a = static_cast<uint64_t>(age & 0x3F) << 58; // Bits 58-63
+        return s | d | flg | fSq | tSq | p | a;
     }
 
-    static inline void unpackData(uint64_t val, int& score, int& depth, uint8_t& flag, uint16_t& fromSq, uint16_t& toSq, int16_t& promo, uint8_t& age, uint16_t& keySig) {
-        score = static_cast<int16_t>(val & 0xFFFFULL);
-        depth = static_cast<int>((val >> 16) & 0xFF);
-        flag = static_cast<uint8_t>((val >> 24) & 3);
-        fromSq = static_cast<uint16_t>((val >> 26) & 0x3F);
-        toSq = static_cast<uint16_t>((val >> 32) & 0x3F);
-        promo = static_cast<int16_t>(((val >> 38) & 0xF) - 8);
-        age = static_cast<uint8_t>((val >> 42) & 0x3F);
-        keySig = static_cast<uint16_t>((val >> 48) & 0xFFFFULL);
+    static inline void unpackData(uint64_t val, int& score, int& depth, uint8_t& flag, uint16_t& fromSq, uint16_t& toSq, int16_t& promo, uint8_t& age) {
+        score = static_cast<int>(static_cast<int32_t>(val & 0xFFFFFFFFULL));
+        depth = static_cast<int>((val >> 32) & 0xFF);
+        flag = static_cast<uint8_t>((val >> 40) & 3);
+        fromSq = static_cast<uint16_t>((val >> 42) & 0x3F);
+        toSq = static_cast<uint16_t>((val >> 48) & 0x3F);
+        promo = static_cast<int16_t>(((val >> 54) & 0xF) - 8);
+        age = static_cast<uint8_t>((val >> 58) & 0x3F);
     }
 
     // Static Exchange Evaluation (SEE) Algorithm
