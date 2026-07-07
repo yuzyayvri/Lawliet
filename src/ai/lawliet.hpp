@@ -118,12 +118,14 @@ struct SearchContext {
     // Bounded Repetition Detection Hash Stack
     uint64_t hashStack[4096]{};
     int hashStackIdx = 0;
+    int rootLastIrreversible = 0;
 
     // Thread-local Pawn Hash Table (PHT) to ensure 100% thread-safety
     mutable PawnEntry pawnTable[16384]{};
 
     // Search buffers to minimize heap allocations per thread
     Move moveBuffers[210][256]{};
+    int moveScores[210][256]{}; // Parallel scores array
     int moveCounts[210]{};
 
     int64_t localNodes = 0;
@@ -237,14 +239,14 @@ private:
     void storeTT(uint64_t key, int depth, int score, TTFlag flag, const Move& bestMove, int ply);
     bool probeTT(uint64_t key, int depth, int alpha, int beta, int& scoreOut, Move& bestMoveOut, int ply, SearchContext& ctx);
     int scoreMove(const Move& m, const Board& board, int ply, const Move& ttMove, const SearchContext& ctx) const;
-    void orderMoves(Move* moves, int count, const Board& board, int ply, const Move& ttMove, const SearchContext& ctx) const;
+    void orderMoves(Move* moves, int* scores, int count, const Board& board, int ply, const Move& ttMove, const SearchContext& ctx) const;
 
     std::string extractPv(Board& board, uint64_t hash);
     std::string squareToUci(int sq);
 
     // Alpha-Beta Search Phases
     int quiescence(Board& board, int alpha, int beta, int ply, uint64_t hash, TimeManager& tm, SearchContext& ctx);
-    int negamax(Board& board, int depth, int alpha, int beta, int ply, uint64_t hash, TimeManager& tm, SearchContext& ctx, Move excludedMove = Move{});
+    int negamax(Board& board, int depth, int alpha, int beta, int ply, uint64_t hash, TimeManager& tm, SearchContext& ctx, int lastIrreversible, Move excludedMove = Move{});
 
     // Lazy SMP Multithreading Handlers
     Move thinkThread(Board& board, TimeManager& tm, SearchContext& ctx, int threadId);

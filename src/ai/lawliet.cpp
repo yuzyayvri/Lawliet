@@ -1015,18 +1015,30 @@ void Lawliet::storeTT(uint64_t key, int depth, int score, TTFlag flag, const Mov
     uint64_t currentVal = entry.data.load(std::memory_order_relaxed);
     int currentDepth = 0;
     uint8_t currentAge = 0;
+    uint16_t currentKeySig = 0;
+
     if (currentVal != 0) {
-        uint16_t currentKeySig = static_cast<uint16_t>((currentVal >> 48) & 0xFFFFULL);
-        uint16_t keySig = static_cast<uint16_t>((key >> 48) & 0xFFFFULL);
-        if (currentKeySig == keySig) {
-            currentDepth = static_cast<int>((currentVal >> 16) & 0xFF);
-            currentAge = static_cast<uint8_t>((currentVal >> 42) & 0x3F);
-        }
+        int dummyScore = 0;
+        uint8_t dummyFlag = 0;
+        uint16_t dummyFrom = 0, dummyTo = 0;
+        int16_t dummyPromo = 0;
+        unpackData(currentVal, dummyScore, currentDepth, dummyFlag, dummyFrom, dummyTo, dummyPromo, currentAge, currentKeySig);
     }
 
     uint16_t keySig = static_cast<uint16_t>((key >> 48) & 0xFFFFULL);
-    // Eviction logic: replace if empty, or if new depth is greater, or if entry is old (aging)
-    if (currentVal == 0 || depth >= currentDepth || currentAge != ttAge) {
+
+    bool replace = false;
+    if (currentVal == 0) {
+        replace = true;
+    } else if (currentKeySig == keySig) {
+        // Same position: replace if new search is at least as deep, or if we have an exact score
+        replace = (depth >= currentDepth || flag == TT_EXACT);
+    } else {
+        // Collision: replace if existing entry belongs to a previous search age, or if our new search represents a deeper calculation path.
+        replace = (currentAge != ttAge || depth > currentDepth);
+    }
+
+    if (replace) {
         uint16_t fromSq = (bestMove.fromSquare != bestMove.toSquare) ? bestMove.fromSquare : 0xFFFF;
         uint16_t toSq = (bestMove.fromSquare != bestMove.toSquare) ? bestMove.toSquare : 0xFFFF;
         int16_t promo = bestMove.promotionPiece;
@@ -1110,8 +1122,23 @@ int Lawliet::scoreMove(const Move& m, const Board& board, int ply, const Move& t
     return score;
 }
 
-void Lawliet::orderMoves(Move* moves, int count, const Board& board, int ply, const Move& ttMove, const SearchContext& ctx) const {
-    std::sort(moves, moves + count, [&](const Move& a, const Move& b) { return scoreMove(a, board, ply, ttMove, ctx) > scoreMove(b, board, ply, ttMove, ctx); });
+void Lawliet::orderMoves(Move* moves, int* scores, int count, const Board& board, int ply, const Move& ttMove, const SearchContext& ctx) const {
+    struct ScoredMove {
+        Move m;
+        int score;
+    };
+    ScoredMove temp[256];
+    for (int i = 0; i < count; ++i) {
+        temp[i].m = moves[i];
+        temp[i].score = scoreMove(moves[i], board, ply, ttMove, ctx);
+    }
+    std::sort(temp, temp + count, [](const ScoredMove& a, const ScoredMove& b) {
+        return a.score > b.score;
+    });
+    for (int i = 0; i < count; ++i) {
+        moves[i] = temp[i].m;
+        scores[i] = temp[i].score;
+    }
 }
 
 int Lawliet::quiescence(Board& board, int alpha, int beta, int ply, uint64_t hash, TimeManager& tm, SearchContext& ctx) {
@@ -1142,14 +1169,17 @@ int Lawliet::quiescence(Board& board, int alpha, int beta, int ply, uint64_t has
     }
 
     const Move noMove{};
-    orderMoves(ctx.moveBuffers[ply], ctx.moveCounts[ply], board, ply, noMove, ctx);
+    orderMoves(ctx.moveBuffers[ply], ctx.moveScores[ply], ctx.moveCounts[ply], board, ply, noMove, ctx);
 
     int legalMovesSearched = 0;
 
     for (int i = 0; i < ctx.moveCounts[ply]; ++i) {
         if (tm.shouldStop()) return 0;
         Move m = ctx.moveBuffers[ply][i];
-        if (!inCheck && see(board, m.fromSquare, m.toSquare) < 0) continue;
+        int score = ctx.moveScores[ply][i];
+
+        // Smarter Quiescence Pruning (Priority 3: No redundant see() evaluations)
+        if (!inCheck && score < 10000000) continue;
 
         doMove(board, m, hash, ctx);
 
@@ -1160,12 +1190,12 @@ int Lawliet::quiescence(Board& board, int alpha, int beta, int ply, uint64_t has
         }
         legalMovesSearched++;
 
-        int score = -quiescence(board, -beta, -alpha, ply + 1, hash, tm, ctx);
+        int scoreVal = -quiescence(board, -beta, -alpha, ply + 1, hash, tm, ctx);
         undoMove(board, m, hash, ctx);
 
         if (tm.shouldStop()) return 0;
-        if (score >= beta) return beta;
-        if (score > alpha) alpha = score;
+        if (scoreVal >= beta) return beta;
+        if (scoreVal > alpha) alpha = scoreVal;
     }
 
     // Q-Search mate handling
@@ -1176,7 +1206,7 @@ int Lawliet::quiescence(Board& board, int alpha, int beta, int ply, uint64_t has
     return alpha;
 }
 
-int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint64_t hash, TimeManager& tm, SearchContext& ctx, Move excludedMove) {
+int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint64_t hash, TimeManager& tm, SearchContext& ctx, int lastIrreversible, Move excludedMove) {
     // Check stop flag instantly on every node to block score leakage upon time out
     if (tm.stopFlag.load(std::memory_order_relaxed)) return 0;
 
@@ -1187,16 +1217,14 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
     }
     if (ply >= MAX_PLY - 1) return evaluateBoard(board, alpha, beta, &ctx);
 
-    // Fast Bounded Threefold Repetition Detection (NPS Optimizer)
-    int lastIrreversible = 0;
-    for (int i = static_cast<int>(board.moveHistory.size()) - 1; i >= 0; --i) {
-        if (std::abs(board.moveHistory[i].pieceMoved) == 1 || board.moveHistory[i].pieceCaptured != 0) {
-            lastIrreversible = i + 1;
-            break;
-        }
-    }
+    // Priority 7: Mate Distance Pruning (MDP)
+    alpha = std::max(alpha, -INF + ply);
+    beta = std::min(beta, INF - ply - 1);
+    if (alpha >= beta) return alpha;
+
+    // Fast Bounded Threefold Repetition Detection (Priority 2 Optimization)
     int scanStart = ctx.hashStackIdx - 1;
-    int scanEnd = ctx.hashStackIdx - static_cast<int>(board.moveHistory.size() - lastIrreversible);
+    int scanEnd = ctx.hashStackIdx - (static_cast<int>(board.moveHistory.size()) + ply - lastIrreversible);
     scanEnd = std::max(0, scanEnd);
     for (int i = scanStart; i >= scanEnd; --i) {
         if (ctx.hashStack[i] == hash) {
@@ -1237,8 +1265,8 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
             int singularBeta = ttScore - 2 * depth; // Singular margin = 2 * depth
             int rDepth = depth - 3;
 
-            // Search excluding the expected singular PV move
-            int rScore = negamax(board, rDepth, singularBeta - 1, singularBeta, ply, hash, tm, ctx, ttMove);
+            // Search excluding the expected singular PV move (Priority 2)
+            int rScore = negamax(board, rDepth, singularBeta - 1, singularBeta, ply, hash, tm, ctx, lastIrreversible, ttMove);
             if (rScore < singularBeta) {
                 extension = 1; // Singular move confirmed! Extend 1 ply.
             }
@@ -1248,7 +1276,7 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
     // Internal Iterative Deepening (IID)
     if (depth >= 5 && ttMove.fromSquare == -1 && !inCheck) {
         int iidDepth = depth - 2;
-        negamax(board, iidDepth, alpha, beta, ply, hash, tm, ctx, excludedMove);
+        negamax(board, iidDepth, alpha, beta, ply, hash, tm, ctx, lastIrreversible, excludedMove);
         probeTT(hash, iidDepth, alpha, beta, ttScore, ttMove, ply, ctx);
     }
 
@@ -1265,13 +1293,13 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
         hasNonPawnMaterial = true;
     }
 
-    // Optimization 4: Depth-Scaled Null Move Pruning (NMP) Reduction
-    if (depth >= 3 && !inCheck && ply > 0 && hasNonPawnMaterial) {
+    // Optimization 4: Depth-Scaled Null Move Pruning (NMP) Reduction (Priority 5 Evaluation Check)
+    if (depth >= 3 && !inCheck && ply > 0 && hasNonPawnMaterial && staticEval >= beta) {
         uint64_t nullHash = hash ^ zobristSide; if (board.enPassantTarget != -1) nullHash ^= zobristEp[board.enPassantTarget];
         uint64_t epBackup = board.enPassantTarget; board.enPassantTarget = -1; board.turn = -board.turn;
 
         int R = 3 + depth / 6;
-        int nullScore = -negamax(board, depth - 1 - R, -beta, -beta + 1, ply + 1, nullHash, tm, ctx, excludedMove);
+        int nullScore = -negamax(board, depth - 1 - R, -beta, -beta + 1, ply + 1, nullHash, tm, ctx, lastIrreversible, excludedMove);
 
         board.turn = -board.turn; board.enPassantTarget = epBackup;
         if (nullScore >= beta) {
@@ -1285,8 +1313,8 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
         int rDepth = depth - 3;
         int probCutBeta = beta + 200; // Standard 200 cp margin
 
-        // We run a fast shallow search with the elevated beta
-        int probScore = negamax(board, rDepth, probCutBeta - 1, probCutBeta, ply + 1, hash, tm, ctx, excludedMove);
+        // We run a fast shallow search with the elevated beta (Priority 2)
+        int probScore = negamax(board, rDepth, probCutBeta - 1, probCutBeta, ply + 1, hash, tm, ctx, lastIrreversible, excludedMove);
         if (probScore >= probCutBeta) {
             return beta; // Cutoff confirmed with high probability!
         }
@@ -1307,7 +1335,8 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
         }
     }
 
-    orderMoves(ctx.moveBuffers[ply], ctx.moveCounts[ply], board, ply, ttMove, ctx);
+    // Sort moves using parallel cached arrays (Priority 3)
+    orderMoves(ctx.moveBuffers[ply], ctx.moveScores[ply], ctx.moveCounts[ply], board, ply, ttMove, ctx);
 
     // Safe Late Move Pruning
     int maxMoves = 3 + depth * depth;
@@ -1319,16 +1348,17 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
     for (int i = 0; i < ctx.moveCounts[ply]; ++i) {
         if (tm.shouldStop()) return 0;
         Move m = ctx.moveBuffers[ply][i];
+        int score = ctx.moveScores[ply][i]; // Priority 3: retrieve cached move score
 
         if (excludedMove.fromSquare != -1 && m == excludedMove) continue;
         bool isQuiet = (m.pieceCaptured == 0 && m.promotionPiece == 0 && !m.wasCastling);
 
-        // Pre-calculate SEE score on the unmodified board state
-        int seeScore = 0;
         bool isCapture = (m.pieceCaptured != 0 || m.wasEnPassant);
 
-        if (depth <= 4 && !inCheck && (m.pieceCaptured != 0 || m.wasEnPassant)) {
-            seeScore = see(board, m.fromSquare, m.toSquare);
+        // Priority 3: O(1) Constant-time reconstruction of SEE score
+        int seeScore = 0;
+        if (isCapture) {
+            seeScore = (score >= 10000000) ? 0 : (score - 5000000);
         }
 
         doMove(board, m, hash, ctx);
@@ -1370,14 +1400,20 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
             }
         }
 
-        int score;
+        // Boundary state progression for child nodes (Priority 2)
+        int nextLastIrreversible = lastIrreversible;
+        if (std::abs(m.pieceMoved) == 1 || m.pieceCaptured != 0) {
+            nextLastIrreversible = ctx.hashStackIdx;
+        }
+
+        int scoreValue;
         int nextDepth = depth - 1;
         if (m == ttMove && extension > 0) {
             nextDepth++; // Apply Singular Extension to PV move search
         }
 
         if (movesSearched == 0) {
-            score = -negamax(board, nextDepth, -beta, -alpha, ply + 1, hash, tm, ctx);
+            scoreValue = -negamax(board, nextDepth, -beta, -alpha, ply + 1, hash, tm, ctx, nextLastIrreversible);
         } else {
             // Optimization 3 & 7: Logarithmic & History-Based Late Move Reductions (LMR)
             int red = 0;
@@ -1400,6 +1436,12 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
                         }
                     }
 
+                    // Priority 6: PV-Node Awareness
+                    bool pvNode = (beta - alpha > 1);
+                    if (pvNode) {
+                        red = std::max(0, red - 1);
+                    }
+
                     // History adjustment (Option 7)
                     int colorIdx = (board.turn == Board::WHITE) ? 0 : 1;
                     int pieceType = board.getPieceType(m.pieceMoved);
@@ -1411,8 +1453,8 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
                 }
             }
 
-            score = -negamax(board, nextDepth - red, -alpha - 1, -alpha, ply + 1, hash, tm, ctx);
-            if (score > alpha) score = -negamax(board, nextDepth, -beta, -alpha, ply + 1, hash, tm, ctx);
+            scoreValue = -negamax(board, nextDepth - red, -alpha - 1, -alpha, ply + 1, hash, tm, ctx, nextLastIrreversible);
+            if (scoreValue > alpha) scoreValue = -negamax(board, nextDepth, -beta, -alpha, ply + 1, hash, tm, ctx, nextLastIrreversible);
         }
 
         undoMove(board, m, hash, ctx);
@@ -1420,13 +1462,13 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
 
         movesSearched++; // Increment after a full evaluation has run
 
-        if (score > bestScore) {
-            bestScore = score;
+        if (scoreValue > bestScore) {
+            bestScore = scoreValue;
             bestMove = m;
             if (ply == 0) ctx.rootBestMove = m;
         }
-        if (score > alpha) {
-            alpha = score;
+        if (scoreValue > alpha) {
+            alpha = scoreValue;
             flag = TT_EXACT;
             if (ply == 0) ctx.rootBestMove = m;
         }
@@ -1632,6 +1674,15 @@ Move Lawliet::think(Board& board, TimeManager& tm) {
 }
 
 Move Lawliet::thinkThread(Board& board, TimeManager& tm, SearchContext& ctx, int threadId) {
+    ctx.rootLastIrreversible = 0;
+
+    for (int i = static_cast<int>(board.moveHistory.size()) - 1; i >= 0; --i) {
+        if (std::abs(board.moveHistory[i].pieceMoved) == 1 || board.moveHistory[i].pieceCaptured != 0) {
+            ctx.rootLastIrreversible = i + 1;
+            break;
+        }
+    }
+
     ctx.threadId = threadId;
     {
         Board tempBoard = board;
@@ -1728,11 +1779,13 @@ Move Lawliet::thinkThread(Board& board, TimeManager& tm, SearchContext& ctx, int
         }
 
         while (true) {
-            int score = negamax(board, depth, alpha, beta, 0, hash, tm, ctx);
+            int score = negamax(board, depth, alpha, beta, 0, hash, tm, ctx, ctx.rootLastIrreversible);
             if (tm.shouldStop()) break;
 
             if (score <= alpha) {
-                alpha = std::max(-INF, alpha - window);
+                // Fail Low: true evaluation is at most 'score'
+                beta = alpha;
+                alpha = std::max(-INF, score - window);
                 window += window / 2;
                 if (threadId == 0 && !tm.infinite.load() && tm.totalTimeMs.load() > 0) {
                     int maxAllowed = tm.totalTimeMs.load() / 3;
@@ -1741,7 +1794,9 @@ Move Lawliet::thinkThread(Board& board, TimeManager& tm, SearchContext& ctx, int
                     tm.allocatedTimeMs.store(newAlloc);
                 }
             } else if (score >= beta) {
-                beta = std::min(INF, beta + window);
+                // Fail High: true evaluation is at least 'score'
+                alpha = beta;
+                beta = std::min(INF, score + window);
                 window += window / 2;
                 if (threadId == 0 && !tm.infinite.load() && tm.totalTimeMs.load() > 0) {
                     int maxAllowed = tm.totalTimeMs.load() / 3;
