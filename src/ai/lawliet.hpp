@@ -131,14 +131,141 @@ struct SearchContext {
     int64_t localNodes = 0;
     Move rootBestMove{};
 
+    // Core search statistics
     int64_t ttLookups = 0;
     int64_t ttHits = 0;
-    int64_t fhf = 0;
+    int64_t ttExactHits = 0;
+    int64_t ttLowerBoundHits = 0;
+    int64_t ttUpperBoundHits = 0;
+    int64_t ttCutoffs = 0;
+    int64_t ttMoveUsed = 0;
+    int64_t ttMoveBetaCutoffs = 0;
+    int64_t ttStores = 0;
+    int64_t ttReplacements = 0;
+    int64_t ttAgeCollisions = 0;
+    int64_t ttOccupancy = 0;
+    int64_t ttMaxAge = 0;
+    int64_t nodesSearched = 0;
+    int64_t quiescenceNodes = 0;
     int64_t failHighs = 0;
+    int64_t failLows = 0;
+    int64_t exactNodes = 0;
+    int64_t betaCutoffs = 0;
+    int64_t alphaFailures = 0;
+    int64_t cutoffDepthSum = 0;
+    int64_t fhf = 0;
+
+    // Static evaluation pipeline statistics
+    int64_t staticEvalCalls = 0;
+    int64_t incrementalUpdates = 0;
+    int64_t fullRecomputations = 0;
+    int64_t staticEvalSum = 0;
+    int staticEvalMax = -9999999;
+    int staticEvalMin = 9999999;
+
+    // Principal variation statistics
+    int64_t pvChanges = 0;
+    int64_t rootBestMoveChanges = 0;
+    int64_t pvLengthSum = 0;
+
+    // Move ordering placement tracking
+    int64_t bestMoveRankTotal = 0;
+    int64_t bestMoveRankCount = 0;
+    int64_t moveOrderCounts[7]{};
+    int64_t ttMoveUsedCount = 0;
+    int64_t winningCaptureCount = 0;
+    int64_t killerMoveCount = 0;
+    int64_t historyHeuristicCount = 0;
+    int64_t countermoveCount = 0;
+    int64_t otherOrderCount = 0;
+    struct MoveOrderingStats {
+        int64_t bestMoveRankTotal = 0;
+        int64_t bestMoveRankCount = 0;
+        int64_t moveOrderCounts[7] = {};
+        int64_t firstMoveCutoffs = 0;
+        int avgBestMoveRank = 0;
+        int medianBestMoveRank = 0;
+    } moveOrderStats;
+
+    // Aspiration window statistics
+    int64_t aspirationFailHighs = 0;
+    int64_t aspirationFailLows = 0;
+    int64_t aspirationWindowSum = 0;
+    int64_t fullWindowSearches = 0;
+    int64_t nullWindowSearches = 0;
+
+    // History heuristic statistics
+    int64_t historyHits = 0;
+    int64_t historyCutoffs = 0;
+    int64_t historyScoreSum = 0;
+
+    // Killer heuristic statistics
+    int64_t killerHits = 0;
+    int64_t killerCutoffs = 0;
+    int64_t killerRankSum = 0;
+
+    // Pruning statistics
+    int64_t nullMoveAttempts = 0;
+    int64_t nullMoveSuccess = 0;
+    int64_t lmrApplications = 0;
+    int64_t lmrReductionsSum = 0;
+    int64_t lmrMaxReduction = 0;
+    int64_t lmrReducedMoves = 0;
+    int64_t lmrSuccessfulReSearches = 0;
+    int64_t lmrApplicationsCount = 0;
+    int64_t futilityApplications = 0;
+    int64_t reverseFutilityApplications = 0;
+    int64_t razoringApplications = 0;
+    int64_t probCutAttempts = 0;
+    int64_t probCutSuccess = 0;
+    int64_t singularExtensionAttempts = 0;
+    int64_t singularExtensionSuccess = 0;
+
+    // Extension statistics
+    int64_t checkExtensions = 0;
+    int64_t recaptureExtensions = 0;
+    int64_t passedPawnExtensions = 0;
+    int64_t singularExtensions = 0;
+    int64_t extensionSizeSum = 0;
+
+    // SEE statistics
+    int64_t seeCalls = 0;
+    int64_t seeAccepted = 0;
+    int64_t seeRejected = 0;
+
+    // Time management statistics
+    int64_t allocatedTime = 0;
+    int64_t actualTime = 0;
+    int64_t softStops = 0;
+    int64_t hardStops = 0;
+    int64_t timeExpiredDuringSearch = 0;
+
+    // Lazy SMP statistics
+    int64_t helperThreadUtil = 0;
+    int64_t splitPoints = 0;
+    int64_t ttSharingRate = 0;
+    int64_t threadIdleTime = 0;
+    int64_t threadStopEvents = 0;
+
     int maxQuiescencePly = 0;
     int bestScore = 0;
     int threadId = 0; // Diversifies Lazy SMP search branches
+
+    // Root iteration recording
+    struct RootIterationInfo {
+        Move move;
+        int initialOrder = 0;
+        int finalOrder = 0;
+        int finalScore = 0;
+        int64_t nodes = 0;
+        int time = 0;
+        int depth = 0;
+        int reSearches = 0;
+        int failHighCount = 0;
+    };
+    std::vector<RootIterationInfo> rootIterations;
 };
+
 
 // ============================================================================
 // LAWLIET CHESS ENGINE CORE INTERFACE
@@ -227,7 +354,7 @@ private:
     }
 
     // Static Exchange Evaluation (SEE) Algorithm
-    int see(const Board& board, int from, int to) const;
+    int see(const Board& board, int from, int to, SearchContext& ctx) const;
     uint64_t seeAttackers(const Board& board, int sq, uint64_t occupied) const;
     uint64_t seeXrays(const Board& board, int sq, uint64_t occupied) const;
     uint64_t getPinnedPieces(const Board& board, int kingSq, int friendlyColor) const;
@@ -237,14 +364,12 @@ private:
     void generateCaptures(const Board& board, int color, Move* out, int& count) const;
     void doMove(Board& board, Move& m, uint64_t& hash, SearchContext& ctx);
     void undoMove(Board& board, Move& m, uint64_t& hash, SearchContext& ctx);
-    void storeTT(uint64_t key, int depth, int score, TTFlag flag, const Move& bestMove, int ply);
+    void storeTT(uint64_t key, int depth, int score, TTFlag flag, const Move& bestMove, int ply, SearchContext& ctx);
     bool probeTT(uint64_t key, int depth, int alpha, int beta, int& scoreOut, Move& bestMoveOut, int ply, SearchContext& ctx);
-    int scoreMove(const Move& m, const Board& board, int ply, const Move& ttMove, const SearchContext& ctx) const;
-    void orderMoves(Move* moves, int* scores, int count, const Board& board, int ply, const Move& ttMove, const SearchContext& ctx) const;
+    int scoreMove(const Move& m, const Board& board, int ply, const Move& ttMove, SearchContext& ctx) const;
+    void orderMoves(Move* moves, int* scores, int count, const Board& board, int ply, const Move& ttMove, SearchContext& ctx) const;
 
     std::string extractPv(Board& board, uint64_t hash);
-    std::string squareToUci(int sq);
-
     // Alpha-Beta Search Phases
     int quiescence(Board& board, int alpha, int beta, int ply, uint64_t hash, TimeManager& tm, SearchContext& ctx);
     int negamax(Board& board, int depth, int alpha, int beta, int ply, uint64_t hash, TimeManager& tm, SearchContext& ctx, int lastIrreversible, Move excludedMove = Move{});
@@ -262,4 +387,5 @@ public:
     Move think(Board& board);
     Move think(Board& board, TimeManager& tm);
     int evaluateBoard(const Board& board, int alpha = -INF, int beta = INF, const SearchContext* ctx = nullptr) const;
+    static std::string squareToUci(int sq);
 };

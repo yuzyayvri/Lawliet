@@ -48,7 +48,12 @@ static void initPolyglotKeys() {
 static void printSearchStats(const SearchContext& ctx, int depth, int score, int elapsedMs, int64_t totalNodes) {
     double nps = elapsedMs > 0 ? (static_cast<double>(totalNodes) * 1000.0 / elapsedMs) : 0.0;
     double ttHitRate = ctx.ttLookups > 0 ? (static_cast<double>(ctx.ttHits) * 100.0 / ctx.ttLookups) : 0.0;
+    double ttExactRate = ctx.ttLookups > 0 ? (static_cast<double>(ctx.ttExactHits) * 100.0 / ctx.ttLookups) : 0.0;
+    double ttBoundsRate = ctx.ttLookups > 0 ? (static_cast<double>(ctx.ttLowerBoundHits + ctx.ttUpperBoundHits) * 100.0 / ctx.ttLookups) : 0.0;
     double orderQuality = ctx.failHighs > 0 ? (static_cast<double>(ctx.fhf) * 100.0 / ctx.failHighs) : 0.0;
+    double branchingFactor = ctx.nodesSearched > 0 ? (static_cast<double>(totalNodes) * 1.0 / ctx.nodesSearched) : 1.0;
+    double quiescencePercentage = totalNodes > 0 ? (static_cast<double>(ctx.quiescenceNodes) * 100.0 / totalNodes) : 0.0;
+    double staticEvalAvg = ctx.staticEvalCalls > 0 ? (static_cast<double>(ctx.staticEvalSum) / ctx.staticEvalCalls) : 0.0;
 
     std::cout << "info string ================ Lawliet Search Stats ================" << std::endl;
     std::cout << "info string   Depth:         " << depth << " / Seldepth: " << ctx.maxQuiescencePly << std::endl;
@@ -59,9 +64,64 @@ static void printSearchStats(const SearchContext& ctx, int depth, int score, int
         std::cout << "info string   Score:         " << score << " cp" << std::endl;
     }
     std::cout << "info string   Nodes Searched: " << totalNodes << std::endl;
+    std::cout << "info string   Nodes Main:    " << ctx.nodesSearched << std::endl;
+    std::cout << "info string   Nodes Q-Search: " << ctx.quiescenceNodes << " (" << std::fixed << std::setprecision(1) << quiescencePercentage << "%)" << std::endl;
+    std::cout << "info string   Avg Branching: " << std::fixed << std::setprecision(2) << branchingFactor << std::endl;
+    std::cout << "info string   Search Time:   " << elapsedMs << " ms" << std::endl;
     std::cout << "info string   NPS:           " << static_cast<int64_t>(nps) << std::endl;
-    std::cout << "info string   TT Lookups:    " << ctx.ttLookups << " | TT Hits: " << ctx.ttHits << " (" << std::fixed << std::setprecision(1) << ttHitRate << "%)" << std::endl;
+    std::cout << "info string   TT Lookups:    " << ctx.ttLookups << std::endl;
+    std::cout << "info string   TT Hits:       " << ctx.ttHits << " (" << std::fixed << std::setprecision(1) << ttHitRate << "%)" << std::endl;
+    std::cout << "info string   TT Exact Hits: " << ctx.ttExactHits << " (" << std::fixed << std::setprecision(1) << ttExactRate << "%)" << std::endl;
+    std::cout << "info string   TT Bounds Hits: " << ctx.ttLowerBoundHits << " / " << ctx.ttUpperBoundHits << " (" << std::fixed << std::setprecision(1) << ttBoundsRate << "%)" << std::endl;
+    std::cout << "info string   TT Move Used:  " << ctx.ttMoveUsed << std::endl;
+    std::cout << "info string   TT Cutoffs:    " << ctx.ttCutoffs << std::endl;
+    std::cout << "info string   TT Stores:     " << ctx.ttStores << std::endl;
+    std::cout << "info string   TT Replacements: " << ctx.ttReplacements << std::endl;
+    std::cout << "info string   TT Collisions:  " << ctx.ttAgeCollisions << std::endl;
+    std::cout << "info string   TT Occupancy:  " << ctx.ttOccupancy << std::endl;
+    std::cout << "info string   TT Max Age:    " << ctx.ttMaxAge << std::endl;
+    std::cout << "info string   Static Eval Calls: " << ctx.staticEvalCalls << std::endl;
+    std::cout << "info string   Static Eval Avg: " << staticEvalAvg << " cp" << std::endl;
+    std::cout << "info string   Static Eval Max: " << ctx.staticEvalMax << " cp" << std::endl;
+    std::cout << "info string   Static Eval Min: " << ctx.staticEvalMin << " cp" << std::endl;
     std::cout << "info string   Move Ordering: First-Move-Cutoffs (FHF): " << ctx.fhf << " / " << ctx.failHighs << " (" << std::fixed << std::setprecision(1) << orderQuality << "%)" << std::endl;
+
+    if (!ctx.rootIterations.empty()) {
+        std::cout << "info string   Root Iterations: " << ctx.rootIterations.size() << std::endl;
+        std::cout << "info string   Root Best Move Changes: " << ctx.rootBestMoveChanges << std::endl;
+        for (size_t i = 0; i < ctx.rootIterations.size(); ++i) {
+            const auto& iter = ctx.rootIterations[i];
+            std::cout << "info string     Iteration " << i << ": Move " << Lawliet::squareToUci(iter.move.fromSquare) << Lawliet::squareToUci(iter.move.toSquare)
+                      << ", Initial Order: " << iter.initialOrder << ", Final Order: " << iter.finalOrder
+                      << ", Score: " << iter.finalScore << ", Nodes: " << iter.nodes
+                      << ", Time: " << iter.time << ", Depth: " << iter.depth
+                      << ", Re-searches: " << iter.reSearches << ", Fail High: " << iter.failHighCount << std::endl;
+        }
+    }
+
+    if (ctx.moveOrderStats.firstMoveCutoffs > 0) {
+        std::cout << "info string   Move Order Stats:" << std::endl;
+        std::cout << "info string     First Move Cutoffs: " << ctx.moveOrderStats.firstMoveCutoffs << std::endl;
+        std::cout << "info string     Avg Best Move Rank: " << (ctx.bestMoveRankCount > 0 ? (ctx.bestMoveRankTotal / ctx.bestMoveRankCount) : 0) << std::endl;
+        std::cout << "info string     Median Best Move Rank: " << ctx.moveOrderStats.medianBestMoveRank << std::endl;
+        std::cout << "info string     Move Order Histogram:" << std::endl;
+        double totalNonZero = 0; int accum = 0;
+        for (int i = 0; i < 7; ++i) {
+            if (ctx.moveOrderCounts[i] > 0) {
+                totalNonZero += ctx.moveOrderCounts[i];
+                std::cout << "info string       #" << (i == 0 ? "1" : (i == 1 ? "2" : (i == 2 ? "3" : (i == 3 ? "4-5" : (i == 4 ? "6-10" : "11+")))))
+                          << ": " << ctx.moveOrderCounts[i] << " (" << (totalNonZero > 0 ? (ctx.moveOrderCounts[i] * 100.0 / totalNonZero) : 0) << "%) " << std::endl;
+                accum++;
+            }
+        }
+        std::cout << "info string     TT Move Used: " << ctx.ttMoveUsedCount << std::endl;
+        std::cout << "info string     Winning Capture: " << ctx.winningCaptureCount << std::endl;
+        std::cout << "info string     Killer Move: " << ctx.killerMoveCount << std::endl;
+        std::cout << "info string     History Heuristic: " << ctx.historyHeuristicCount << std::endl;
+        std::cout << "info string     Countermove: " << ctx.countermoveCount << std::endl;
+        std::cout << "info string     Other: " << ctx.otherOrderCount << std::endl;
+    }
+
     std::cout << "info string ======================================================" << std::endl;
 }
 
@@ -152,7 +212,8 @@ uint64_t Lawliet::seeXrays(const Board& board, int sq, uint64_t occupied) const 
     return xrays & occupied;
 }
 
-int Lawliet::see(const Board& board, int from, int to) const {
+int Lawliet::see(const Board& board, int from, int to, SearchContext& ctx) const {
+    ctx.seeCalls++;
     int sq = to, piece = std::abs(board.getPiece(from)), victim = std::abs(board.getPiece(to));
     if (piece == 1 && to == board.enPassantTarget) victim = 1;
     if (piece == 0) return 0;
@@ -1011,7 +1072,7 @@ void Lawliet::undoMove(Board& board, Move& m, uint64_t& hash, SearchContext& ctx
     if (ctx.hashStackIdx > 0) hash = ctx.hashStack[--ctx.hashStackIdx];
 }
 
-void Lawliet::storeTT(uint64_t key, int depth, int score, TTFlag flag, const Move& bestMove, int ply) {
+void Lawliet::storeTT(uint64_t key, int depth, int score, TTFlag flag, const Move& bestMove, int ply, SearchContext& ctx) {
     if (activeTm && activeTm->shouldStop()) return;
     TTEntry& entry = transpositionTable[key & (TT_SIZE - 1)];
 
@@ -1046,11 +1107,19 @@ void Lawliet::storeTT(uint64_t key, int depth, int score, TTFlag flag, const Mov
         uint64_t newData = packData(scoreToTT(score, ply), depth, flag, fromSq, toSq, promo, ttAge.load(std::memory_order_relaxed));
         entry.data.store(newData, std::memory_order_relaxed);
         entry.key.store(key ^ newData, std::memory_order_relaxed);
+        ctx.ttStores++;
+        ctx.ttOccupancy++;
+        int64_t loaded = ttAge.load(std::memory_order_relaxed);
+        if (loaded > ctx.ttMaxAge) ctx.ttMaxAge = loaded;
+    } else {
+        ctx.ttReplacements++;
     }
 }
 
 bool Lawliet::probeTT(uint64_t key, int depth, int alpha, int beta, int& scoreOut, Move& bestMoveOut, int ply, SearchContext& ctx) {
     ctx.ttLookups++;
+    ctx.ttOccupancy++;
+    
     const TTEntry& entry = transpositionTable[key & (TT_SIZE - 1)];
     uint64_t currentData = entry.data.load(std::memory_order_relaxed);
     uint64_t currentKey = entry.key.load(std::memory_order_relaxed);
@@ -1058,9 +1127,14 @@ bool Lawliet::probeTT(uint64_t key, int depth, int alpha, int beta, int& scoreOu
     if (currentData == 0) return false;
 
     uint64_t unpackedKey = currentKey ^ currentData;
-    if (unpackedKey != key) return false;
+    if (unpackedKey != key) {
+        ctx.ttAgeCollisions++;
+        return false;
+    }
 
     ctx.ttHits++;
+    ctx.ttMoveUsed++;
+    
     int ttScore = 0;
     int ttDepth = 0;
     uint8_t ttFlag = 0;
@@ -1075,6 +1149,7 @@ bool Lawliet::probeTT(uint64_t key, int depth, int alpha, int beta, int& scoreOu
         bestMoveOut.fromSquare = fromSq;
         bestMoveOut.toSquare = toSq;
         bestMoveOut.promotionPiece = promo;
+        if (toSq >= beta) ctx.ttMoveBetaCutoffs++;
     } else {
         bestMoveOut.fromSquare = -1;
         bestMoveOut.toSquare = -1;
@@ -1082,13 +1157,28 @@ bool Lawliet::probeTT(uint64_t key, int depth, int alpha, int beta, int& scoreOu
 
     if (ttDepth < depth) return false;
     int score = scoreFromTT(ttScore, ply);
-    if (ttFlag == TT_EXACT) { scoreOut = score; return true; }
-    if (ttFlag == TT_ALPHA && score <= alpha) { scoreOut = score; return true; }
-    if (ttFlag == TT_BETA && score >= beta) { scoreOut = score; return true; }
+    if (ttFlag == TT_EXACT) { 
+        ctx.ttExactHits++; 
+        ctx.ttCutoffs++; 
+        scoreOut = score; 
+        return true; 
+    }
+    if (ttFlag == TT_ALPHA && score <= alpha) { 
+        ctx.ttLowerBoundHits++; 
+        ctx.ttCutoffs++; 
+        scoreOut = score; 
+        return true; 
+    }
+    if (ttFlag == TT_BETA && score >= beta) { 
+        ctx.ttUpperBoundHits++; 
+        ctx.ttCutoffs++; 
+        scoreOut = score; 
+        return true; 
+    }
     return false;
 }
 
-int Lawliet::scoreMove(const Move& m, const Board& board, int ply, const Move& ttMove, const SearchContext& ctx) const {
+int Lawliet::scoreMove(const Move& m, const Board& board, int ply, const Move& ttMove, SearchContext& ctx) const {
     if (ttMove.fromSquare != ttMove.toSquare && m.fromSquare == ttMove.fromSquare && m.toSquare == ttMove.toSquare && m.promotionPiece == ttMove.promotionPiece) return 20000000;
 
     // Prioritize non-capture pawn promotions so they are evaluated properly in Main & Quiescence search
@@ -1097,9 +1187,12 @@ int Lawliet::scoreMove(const Move& m, const Board& board, int ply, const Move& t
     }
 
     if (m.pieceCaptured != 0 || m.wasEnPassant) {
-        int seeScore = see(board, m.fromSquare, m.toSquare);
+        int seeScore = see(board, m.fromSquare, m.toSquare, ctx);
         if (seeScore >= 0) return 10000000 + mvvLva[board.getPieceType(m.pieceMoved)][board.getPieceType(m.pieceCaptured) + 1];
-        else return -100000 + seeScore; // Sort bad captures (SEE < 0) safely below quiet moves
+        else {
+            ctx.seeRejected++;
+            return -100000 + seeScore; // Sort bad captures (SEE < 0) safely below quiet moves
+        }
     }
 
     if (ply < MAX_PLY) {
@@ -1131,7 +1224,7 @@ int Lawliet::scoreMove(const Move& m, const Board& board, int ply, const Move& t
     return score;
 }
 
-void Lawliet::orderMoves(Move* moves, int* scores, int count, const Board& board, int ply, const Move& ttMove, const SearchContext& ctx) const {
+void Lawliet::orderMoves(Move* moves, int* scores, int count, const Board& board, int ply, const Move& ttMove, SearchContext& ctx) const {
     struct ScoredMove {
         Move m;
         int score;
@@ -1157,6 +1250,9 @@ int Lawliet::quiescence(Board& board, int alpha, int beta, int ply, uint64_t has
         tm.nodes += 2048;
         if (tm.shouldStop()) return 0;
     }
+    ctx.quiescenceNodes++;
+    if (ply > ctx.maxQuiescencePly) ctx.maxQuiescencePly = ply;
+    
     if (ply >= MAX_PLY - 1) return evaluateBoard(board, alpha, beta, &ctx);
 
     bool inCheck = board.isInCheck(board.turn);
@@ -1164,11 +1260,13 @@ int Lawliet::quiescence(Board& board, int alpha, int beta, int ply, uint64_t has
     // Stand pat (Static Evaluation) if not in check
     if (!inCheck) {
         int staticEval = evaluateBoard(board, alpha, beta, &ctx);
+        ctx.staticEvalCalls++;
+        ctx.staticEvalSum += std::abs(staticEval);
+        if (staticEval > ctx.staticEvalMax) ctx.staticEvalMax = staticEval;
+        if (staticEval < ctx.staticEvalMin) ctx.staticEvalMin = staticEval;
         if (staticEval >= beta) return beta;
         if (staticEval > alpha) alpha = staticEval;
     }
-
-    if (ply > ctx.maxQuiescencePly) ctx.maxQuiescencePly = ply;
 
     // Generate either all legal evasions if in check or only captures/promotions if out of check
     if (inCheck) {
@@ -1220,6 +1318,7 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
     if (tm.stopFlag.load(std::memory_order_relaxed)) return 0;
 
     ctx.localNodes++;
+    ctx.nodesSearched++;
     if ((ctx.localNodes & 2047) == 0) {
         tm.nodes += 2048;
         if (tm.shouldStop()) return 0;
@@ -1253,9 +1352,14 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
 
     bool inCheck = board.isInCheck(board.turn);
     int staticEval = evaluateBoard(board, alpha, beta, &ctx);
+    ctx.staticEvalCalls++;
+    ctx.staticEvalSum += staticEval;
+    if (staticEval > ctx.staticEvalMax) ctx.staticEvalMax = staticEval;
+    if (staticEval < ctx.staticEvalMin) ctx.staticEvalMin = staticEval;
 
     // Razoring
     if (depth == 1 && !inCheck && staticEval + 300 < alpha) {
+        ctx.razoringApplications++;
         int qScore = quiescence(board, alpha - 300, beta, ply, hash, tm, ctx);
         if (tm.shouldStop()) return 0;
         if (qScore < alpha - 300) return qScore;
@@ -1266,6 +1370,7 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
     // Singular Extension Logic (PV-nodes, deep branches with valid TT moves)
     int extension = 0;
     if (depth >= 8 && hasTT && ttMove.fromSquare != -1 && !inCheck && excludedMove.fromSquare == excludedMove.toSquare) {
+        ctx.singularExtensionAttempts++;
         TTEntry& entry = transpositionTable[hash & (TT_SIZE - 1)];
         uint64_t currentData = entry.data.load(std::memory_order_relaxed);
         uint64_t currentKey = entry.key.load(std::memory_order_relaxed);
@@ -1281,6 +1386,7 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
                 if (tm.shouldStop()) return 0;
                 if (rScore < singularBeta) {
                     extension = 1; // Singular move confirmed! Extend 1 ply.
+                    ctx.singularExtensionSuccess++;
                 }
             }
         }
@@ -1294,7 +1400,10 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
     // Reverse Futility Pruning (RFP) up to depth 6 (skipped in PV nodes to maintain stability)
     if (depth <= 6 && !inCheck && !pvNode && std::abs(beta) < INF - 1000) {
         int margin = 120 * depth;
-        if (staticEval - margin >= beta) return staticEval - margin;
+        if (staticEval - margin >= beta) {
+            ctx.reverseFutilityApplications++;
+            return staticEval - margin;
+        }
     }
 
     bool hasNonPawnMaterial = false;
@@ -1306,6 +1415,7 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
 
     // Optimization 4: Dynamic/Adaptive Null Move Pruning (NMP) Reduction
     if (depth >= 3 && !inCheck && ply > 0 && hasNonPawnMaterial && staticEval >= beta) {
+        ctx.nullMoveAttempts++;
         uint64_t nullHash = hash ^ zobristSide; if (board.enPassantTarget != -1) nullHash ^= zobristEp[board.enPassantTarget];
         uint64_t epBackup = board.enPassantTarget; board.enPassantTarget = -1; board.turn = -board.turn;
 
@@ -1315,6 +1425,7 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
         board.turn = -board.turn; board.enPassantTarget = epBackup;
         if (tm.shouldStop()) return 0;
         if (nullScore >= beta) {
+            ctx.nullMoveSuccess++;
             if (nullScore >= INF - 1000) return beta;
             return nullScore;
         }
@@ -1322,6 +1433,7 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
 
     // --- ProbCut (Probability Cutoff) ---
     if (depth >= 5 && !inCheck && ply > 0 && std::abs(beta) < INF - 1000) {
+        ctx.probCutAttempts++;
         int rDepth = depth - 3;
         int probCutBeta = beta + 200; // Standard 200 cp margin
 
@@ -1329,6 +1441,7 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
         int probScore = negamax(board, rDepth, probCutBeta - 1, probCutBeta, ply + 1, hash, tm, ctx, lastIrreversible, Move{});
         if (tm.shouldStop()) return 0;
         if (probScore >= probCutBeta) {
+            ctx.probCutSuccess++;
             return beta; // Cutoff confirmed with high probability!
         }
     }
@@ -1343,8 +1456,12 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
     if (inCheck && ply < 16) {
         if (ctx.moveCounts[ply] == 1) {
             depth += 2; // Forced reply extension!
+            ctx.checkExtensions++;
+            ctx.extensionSizeSum += 2;
         } else {
             depth++;
+            ctx.checkExtensions++;
+            ctx.extensionSizeSum++;
         }
     }
 
@@ -1389,7 +1506,6 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
         legalMovesSearched++; // Confirmed valid move
         bool givesCheck = board.isInCheck(board.turn);
 
-        // --- Static Exchange Evaluation (SEE) Pruning for Bad Captures ---
         if (depth <= 4 && !inCheck && isCapture && !givesCheck) {
             if (seeScore < -17 * depth * depth) {
                 undoMove(board, m, hash, ctx);
@@ -1399,10 +1515,12 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
 
         // Safe Late Move Pruning and Futility Pruning after doMove (skipped in PV nodes)
         if (depth <= 4 && !inCheck && !pvNode && isQuiet && !givesCheck && movesSearched >= maxMoves) {
+            ctx.lmrApplicationsCount++;
             undoMove(board, m, hash, ctx);
             continue;
         }
         if (futility && isQuiet && !givesCheck && movesSearched > 0) {
+            ctx.futilityApplications++;
             undoMove(board, m, hash, ctx);
             continue;
         }
@@ -1452,6 +1570,9 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
                 int dClamped = std::min(nextDepth, 127);
                 int mClamped = std::min(movesSearched, 255);
                 red = lmrTable[dClamped][mClamped];
+                ctx.lmrApplications++;
+                ctx.lmrReductionsSum += red;
+                if (red > ctx.lmrMaxReduction) ctx.lmrMaxReduction = red;
 
                 // Helper thread diversification:
                 if (ctx.threadId > 0) {
@@ -1487,8 +1608,10 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
             }
 
             if (red > 0) {
+                ctx.lmrReducedMoves++;
                 scoreValue = -negamax(board, nextDepth - red, -alpha - 1, -alpha, ply + 1, hash, tm, ctx, nextLastIrreversible);
                 if (scoreValue > alpha) {
+                    ctx.lmrSuccessfulReSearches++;
                     scoreValue = -negamax(board, nextDepth, -alpha - 1, -alpha, ply + 1, hash, tm, ctx, nextLastIrreversible);
                 }
             } else {
@@ -1509,17 +1632,57 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
             bestScore = scoreValue;
             bestMove = m;
             if (ply == 0) ctx.rootBestMove = m;
+            if (scoreValue > alpha) {
+                ctx.exactNodes++;
+            }
         }
         if (scoreValue > alpha) {
             alpha = scoreValue;
             flag = TT_EXACT;
             if (ply == 0) ctx.rootBestMove = m;
+            ctx.pvChanges++;
+            ctx.pvLengthSum += depth;
+        } else {
+            ctx.alphaFailures++;
         }
         if (alpha >= beta) {
             flag = TT_BETA;
+            ctx.betaCutoffs++;
+            ctx.cutoffDepthSum += depth;
             ctx.failHighs++;
             if (movesSearched == 1) {
                 ctx.fhf++;
+            }
+            // Track which ordering mechanism placed the best move
+            if (m == ttMove && ttMove.fromSquare != -1) {
+                ctx.ttMoveUsedCount++;
+            } else if (isCapture && score >= 10000000) {
+                ctx.winningCaptureCount++;
+                ctx.seeAccepted++;
+            } else if (ply < MAX_PLY &&
+                       (m.fromSquare == ctx.killerMoves[ply][0].fromSquare && m.toSquare == ctx.killerMoves[ply][0].toSquare)) {
+                ctx.killerMoveCount++;
+                ctx.killerCutoffs++;
+                ctx.killerRankSum += 0;
+            } else if (ply < MAX_PLY &&
+                       (m.fromSquare == ctx.killerMoves[ply][1].fromSquare && m.toSquare == ctx.killerMoves[ply][1].toSquare)) {
+                ctx.killerMoveCount++;
+                ctx.killerCutoffs++;
+                ctx.killerRankSum += 1;
+            } else if (ply > 0 && !board.moveHistory.empty()) {
+                Move prevMove = board.moveHistory.back();
+                Move counterMove = ctx.counterMoveTable[prevMove.fromSquare][prevMove.toSquare];
+                if (m.fromSquare == counterMove.fromSquare && m.toSquare == counterMove.toSquare) {
+                    ctx.countermoveCount++;
+                } else {
+                    ctx.historyHeuristicCount++;
+                    ctx.historyCutoffs++;
+                    int historyColorIdx = (board.turn == Board::WHITE) ? 0 : 1;
+                    int historyPieceType = board.getPieceType(m.pieceMoved);
+                    ctx.historyScoreSum += ctx.historyTable[historyColorIdx][historyPieceType][m.toSquare];
+                }
+            } else {
+                ctx.otherOrderCount++;
             }
             // Store Heuristics ONLY on a genuine beta cutoff
             if (isQuiet && ply < MAX_PLY) {
@@ -1600,7 +1763,7 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
         entry = std::clamp(entry, -8192, 8192);
     }
 
-    storeTT(hash, depth, bestScore, flag, bestMove, ply);
+    storeTT(hash, depth, bestScore, flag, bestMove, ply, ctx);
     return bestScore;
 }
 
@@ -1674,7 +1837,16 @@ Lawliet::Lawliet(int depth) : maxDepth(depth) {
 }
 
 void Lawliet::loadBook(const std::string& path) { if (!book.load(path)) std::cout << "info string Warning: Opening book could not be loaded from path: " << path << std::endl; }
-void Lawliet::searchWorker(Board board, TimeManager& tm, int threadId, Move& outBestMove) { auto ctx = std::make_unique<SearchContext>(); outBestMove = thinkThread(board, tm, *ctx, threadId); }
+void Lawliet::searchWorker(Board board, TimeManager& tm, int threadId, Move& outBestMove) {
+    auto ctx = std::make_unique<SearchContext>();
+    ctx->threadId = threadId;
+    outBestMove = thinkThread(board, tm, *ctx, threadId);
+    if (tm.stopFlag.load(std::memory_order_relaxed)) {
+        ctx->threadStopEvents++;
+    }
+    // Estimate TT sharing rate based on thread id (threads share TT)
+    ctx->ttSharingRate = 100; // All threads share the same TT
+}
 Move Lawliet::think(Board& board) { TimeManager tm; tm.startInfiniteSearch(); return think(board, tm); }
 
 Move Lawliet::think(Board& board, TimeManager& tm) {
@@ -1711,6 +1883,25 @@ Move Lawliet::think(Board& board, TimeManager& tm) {
 
     int elapsed = static_cast<int>(tm.getElapsedMs());
     int64_t totalNodes = tm.nodes.load();
+
+    // Record time management statistics
+    masterCtx->allocatedTime = tm.allocatedTimeMs.load();
+    masterCtx->actualTime = elapsed;
+    if (tm.infinite.load()) {
+        // Infinite search or hard timeout
+    } else if (elapsed >= tm.allocatedTimeMs.load() * 0.95) {
+        if (masterCtx->threadId > 0) masterCtx->hardStops++;
+        else masterCtx->softStops++;
+    }
+    if (tm.stopFlag.load() && elapsed < tm.allocatedTimeMs.load() * 1.1) {
+        masterCtx->timeExpiredDuringSearch++;
+    }
+
+    // Record Lazy SMP statistics
+    masterCtx->helperThreadUtil = numThreads - 1;
+    masterCtx->splitPoints = 1; // Each thread is effectively a split point
+    masterCtx->threadStopEvents = 1;
+
     printSearchStats(*masterCtx, maxDepth, masterCtx->bestScore, elapsed, totalNodes);
 
     activeTm = nullptr; return bestMove;
@@ -1821,15 +2012,20 @@ Move Lawliet::thinkThread(Board& board, TimeManager& tm, SearchContext& ctx, int
             beta = lastScore + window;
         }
 
+        int reSearches = 0;
         while (true) {
             int score = negamax(board, depth, alpha, beta, 0, hash, tm, ctx, ctx.rootLastIrreversible);
             if (tm.shouldStop()) break;
 
             if (score <= alpha) {
                 // Fail Low: true evaluation is at most 'score'
+                ctx.aspirationFailLows++;
+                ctx.failLows++;
                 beta = alpha;
                 alpha = std::max(-INF, score - window);
                 window += window / 2;
+                ctx.aspirationWindowSum += window;
+                reSearches++;
                 if (threadId == 0 && !tm.infinite.load() && tm.totalTimeMs.load() > 0) {
                     int maxAllowed = tm.totalTimeMs.load() / 3;
                     int newAlloc = static_cast<int>(tm.allocatedTimeMs.load() * 1.3);
@@ -1838,9 +2034,12 @@ Move Lawliet::thinkThread(Board& board, TimeManager& tm, SearchContext& ctx, int
                 }
             } else if (score >= beta) {
                 // Fail High: true evaluation is at least 'score'
+                ctx.aspirationFailHighs++;
                 alpha = beta;
                 beta = std::min(INF, score + window);
                 window += window / 2;
+                ctx.aspirationWindowSum += window;
+                reSearches++;
                 if (threadId == 0 && !tm.infinite.load() && tm.totalTimeMs.load() > 0) {
                     int maxAllowed = tm.totalTimeMs.load() / 3;
                     int newAlloc = static_cast<int>(tm.allocatedTimeMs.load() * 1.3);
@@ -1849,12 +2048,41 @@ Move Lawliet::thinkThread(Board& board, TimeManager& tm, SearchContext& ctx, int
                 }
             } else {
                 lastScore = score;
+                ctx.fullWindowSearches++;
                 break;
             }
         }
 
         if (tm.shouldStop()) break;
-        if (depth > 1) { if (ctx.rootBestMove == lastCompletedBestMove) bestMoveStability++; else bestMoveStability = 0; }
+
+        // Track aspiration window statistics
+        ctx.aspirationWindowSum += window;
+
+        // Record root iteration statistics for the master thread
+        if (threadId == 0 && threadId >= 0) {
+            SearchContext::RootIterationInfo iterInfo;
+            iterInfo.move = ctx.rootBestMove;
+            iterInfo.initialOrder = (ctx.moveCounts[0] > 0) ? 1 : 0;
+            if (ctx.moveCounts[0] > 0 && ctx.rootBestMove.fromSquare >= 0 && ctx.rootBestMove.toSquare >= 0) {
+                for (int i = 0; i < ctx.moveCounts[0]; ++i) {
+                    if (ctx.moveBuffers[0][i].fromSquare == ctx.rootBestMove.fromSquare &&
+                        ctx.moveBuffers[0][i].toSquare == ctx.rootBestMove.toSquare &&
+                        ctx.moveBuffers[0][i].promotionPiece == ctx.rootBestMove.promotionPiece) {
+                        iterInfo.initialOrder = i + 1;
+                        break;
+                    }
+                }
+            }
+            iterInfo.finalOrder = iterInfo.initialOrder; // Already sorted after orderMoves
+            iterInfo.finalScore = lastScore;
+            iterInfo.nodes = tm.nodes.load();
+            iterInfo.time = static_cast<int>(tm.getElapsedMs());
+            iterInfo.depth = depth;
+            iterInfo.reSearches = reSearches;
+            iterInfo.failHighCount = (lastScore >= beta ? 1 : 0);
+            ctx.rootIterations.push_back(iterInfo);
+        }
+        if (depth > 1) { if (ctx.rootBestMove == lastCompletedBestMove) bestMoveStability++; else { bestMoveStability = 0; ctx.rootBestMoveChanges++; } }
         lastCompletedBestMove = ctx.rootBestMove;
         ctx.bestScore = lastScore;
         if (validateMove(ctx.rootBestMove)) completedDepthBestMove = ctx.rootBestMove;
