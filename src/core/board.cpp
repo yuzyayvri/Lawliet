@@ -42,6 +42,7 @@ Board::Board() {
     gameResult = 0;
     mgPst = 0;
     egPst = 0;
+    halfMoveClock = 0;
 
     loadParams();
     initAttackTables();
@@ -96,6 +97,7 @@ bool Board::loadFen(const std::string& fen) {
     mgPst = 0;
     egPst = 0;
     gameResult = 0;
+    halfMoveClock = 0;
     moveHistory.clear();
     moveNotation.clear();
 
@@ -165,6 +167,13 @@ bool Board::loadFen(const std::string& fen) {
             int r = '8' - epPart[1];
             enPassantTarget = r * 8 + f;
         }
+    }
+
+    // Parse half-move clock (50-move rule counter)
+    std::string hmPart;
+    halfMoveClock = 0;
+    if (iss >> hmPart) {
+        halfMoveClock = std::stoi(hmPart);
     }
 
     loadParams();
@@ -452,14 +461,23 @@ bool Board::hasLegalMoves(int color) const {
 
         if (type == 0) {
             int dir = (color == WHITE) ? -8 : 8;
+            int promoRank = (color == WHITE) ? 0 : 7;
             int to1 = from + dir;
             if (to1 >= 0 && to1 < 64 && !(occ & (1ULL << to1))) {
-                if (leavesKingInCheck(from, to1, 0)) return true;
+                if (to1 / 8 == promoRank) {
+                    for (int promo : {2, 3, 4, 5}) { if (leavesKingInCheck(from, to1, promo)) return true; }
+                } else {
+                    if (leavesKingInCheck(from, to1, 0)) return true;
+                }
             }
             uint64_t i_attacks = pawnAttacks[colorIdx][from] & colorBB[colorIdx ^ 1];
             while (i_attacks) {
                 int to = __builtin_ctzll(i_attacks);
-                if (leavesKingInCheck(from, to, 0)) return true;
+                if (to / 8 == promoRank) {
+                    for (int promo : {2, 3, 4, 5}) { if (leavesKingInCheck(from, to, promo)) return true; }
+                } else {
+                    if (leavesKingInCheck(from, to, 0)) return true;
+                }
                 i_attacks &= i_attacks - 1;
             }
             if (enPassantTarget != -1 && (pawnAttacks[colorIdx][from] & (1ULL << enPassantTarget))) {
@@ -471,7 +489,28 @@ bool Board::hasLegalMoves(int color) const {
         else if (type == 2) attacks = getBishopAttacks(from, occ);
         else if (type == 3) attacks = getRookAttacks(from, occ);
         else if (type == 4) attacks = getBishopAttacks(from, occ) | getRookAttacks(from, occ);
-        else if (type == 5) attacks = kingAttacks[from];
+        else if (type == 5) {
+            attacks = kingAttacks[from];
+            if (color == WHITE) {
+                if (from == 60) {
+                    if (castleWK && !(occ & ((1ULL<<61)|(1ULL<<62))) && !isInCheck(WHITE) && !isSquareAttacked(61, BLACK) && !isSquareAttacked(62, BLACK)) {
+                        if (leavesKingInCheck(60, 62, 0)) return true;
+                    }
+                    if (castleWQ && !(occ & ((1ULL<<57)|(1ULL<<58)|(1ULL<<59))) && !isInCheck(WHITE) && !isSquareAttacked(59, BLACK) && !isSquareAttacked(58, BLACK)) {
+                        if (leavesKingInCheck(60, 58, 0)) return true;
+                    }
+                }
+            } else {
+                if (from == 4) {
+                    if (castleBK && !(occ & ((1ULL<<5)|(1ULL<<6))) && !isInCheck(BLACK) && !isSquareAttacked(5, WHITE) && !isSquareAttacked(6, WHITE)) {
+                        if (leavesKingInCheck(4, 6, 0)) return true;
+                    }
+                    if (castleBQ && !(occ & ((1ULL<<1)|(1ULL<<2)|(1ULL<<3))) && !isInCheck(BLACK) && !isSquareAttacked(3, WHITE) && !isSquareAttacked(2, WHITE)) {
+                        if (leavesKingInCheck(4, 2, 0)) return true;
+                    }
+                }
+            }
+        }
 
         attacks &= ~colorBB[colorIdx];
         while (attacks) {

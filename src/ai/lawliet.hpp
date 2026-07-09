@@ -120,6 +120,12 @@ struct SearchContext {
     int hashStackIdx = 0;
     int rootLastIrreversible = 0;
 
+    // Previous search move at each ply (for countermove/continuation history)
+    Move searchPrevMove[128]{};
+
+    // Fifty-move counter at each ply (for 50-move rule draw detection)
+    int fiftyMove[128]{};
+
     // Thread-local Pawn Hash Table (PHT) to ensure thread-safety
     mutable PawnEntry pawnTable[16384]{};
 
@@ -372,7 +378,7 @@ private:
     std::string extractPv(Board& board, uint64_t hash);
     // Alpha-Beta Search Phases
     int quiescence(Board& board, int alpha, int beta, int ply, uint64_t hash, TimeManager& tm, SearchContext& ctx);
-    int negamax(Board& board, int depth, int alpha, int beta, int ply, uint64_t hash, TimeManager& tm, SearchContext& ctx, int lastIrreversible, Move excludedMove = Move{});
+    int negamax(Board& board, int depth, int alpha, int beta, int ply, uint64_t hash, TimeManager& tm, SearchContext& ctx, int lastIrreversible, int fiftyMove = 0, Move excludedMove = Move{});
 
     // Lazy SMP Multithreading Handlers
     Move thinkThread(Board& board, TimeManager& tm, SearchContext& ctx, int threadId);

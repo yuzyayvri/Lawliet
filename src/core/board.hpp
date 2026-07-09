@@ -48,6 +48,8 @@ public:
     int mgPst;
     int egPst;
 
+    int halfMoveClock;
+
     Board();
     void reset();
     bool loadFen(const std::string& fen);

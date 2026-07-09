@@ -219,9 +219,15 @@ int Lawliet::see(const Board& board, int from, int to, SearchContext& ctx) const
     if (piece == 0) return 0;
     int gain[32], d = 0;
     gain[d] = victim == 0 ? 0 : Board::pieceValuesMidgame[victim - 1];
-    uint64_t occupied = board.occ, attackers = seeAttackers(board, sq, occupied);
+    uint64_t occupied = board.occ;
+    if (piece == 1 && to == board.enPassantTarget) {
+        int epSq = (board.getPiece(from) > 0) ? to + 8 : to - 8;
+        occupied &= ~(1ULL << epSq);
+    }
+    uint64_t attackers = seeAttackers(board, sq, occupied);
     occupied &= ~(1ULL << from); attackers &= ~(1ULL << from); attackers |= seeXrays(board, sq, occupied);
     int side = (board.getPiece(from) > 0) ? 0 : 1, currentPieceValue = Board::pieceValuesMidgame[piece - 1];
+    side = 1 - side;
     while (true) {
         if (d >= 31) break;
         uint64_t myAttackers = attackers & board.colorBB[side];
@@ -236,7 +242,7 @@ int Lawliet::see(const Board& board, int from, int to, SearchContext& ctx) const
         occupied &= ~(1ULL << cheapestSq); attackers &= ~(1ULL << cheapestSq); attackers |= seeXrays(board, sq, occupied);
         side = 1 - side;
     }
-    while (d > 0) { gain[d - 1] = std::max(-gain[d], gain[d - 1]); d--; }
+    while (d > 0) { gain[d - 1] = std::min(-gain[d], gain[d - 1]); d--; }
     return gain[0];
 }
 
@@ -294,7 +300,7 @@ int Lawliet::evaluateBoard(const Board& board, int alpha, int beta, const Search
             bp &= bp - 1;
         }
         int sideIdx = (board.turn == Board::WHITE) ? 0 : 1;
-        int correction = ctx->corrHist[sideIdx][pawnKey % 16384];
+        int correction = ctx->corrHist[sideIdx][pawnKey & 16383];
         if (board.turn == Board::WHITE) {
             mgScore += correction / 16;
             egScore += correction / 16;
@@ -1149,7 +1155,7 @@ bool Lawliet::probeTT(uint64_t key, int depth, int alpha, int beta, int& scoreOu
         bestMoveOut.fromSquare = fromSq;
         bestMoveOut.toSquare = toSq;
         bestMoveOut.promotionPiece = promo;
-        if (toSq >= beta) ctx.ttMoveBetaCutoffs++;
+        if (ttScore >= beta) ctx.ttMoveBetaCutoffs++;
     } else {
         bestMoveOut.fromSquare = -1;
         bestMoveOut.toSquare = -1;
@@ -1199,7 +1205,15 @@ int Lawliet::scoreMove(const Move& m, const Board& board, int ply, const Move& t
         if (m.fromSquare == ctx.killerMoves[ply][0].fromSquare && m.toSquare == ctx.killerMoves[ply][0].toSquare) return 8000000;
 
         // Countermove Heuristic ordering
-        if (ply > 0 && !board.moveHistory.empty()) {
+        if (ply > 0) {
+            Move prevMove = ctx.searchPrevMove[ply];
+            if (prevMove.fromSquare >= 0) {
+                Move counterMove = ctx.counterMoveTable[prevMove.fromSquare][prevMove.toSquare];
+                if (m.fromSquare == counterMove.fromSquare && m.toSquare == counterMove.toSquare && m.promotionPiece == counterMove.promotionPiece) {
+                    return 7500000;
+                }
+            }
+        } else if (!board.moveHistory.empty()) {
             Move prevMove = board.moveHistory.back();
             Move counterMove = ctx.counterMoveTable[prevMove.fromSquare][prevMove.toSquare];
             if (m.fromSquare == counterMove.fromSquare && m.toSquare == counterMove.toSquare && m.promotionPiece == counterMove.promotionPiece) {
@@ -1214,7 +1228,15 @@ int Lawliet::scoreMove(const Move& m, const Board& board, int ply, const Move& t
     int colorIdx = (board.turn == Board::WHITE) ? 0 : 1;
     int pieceType = board.getPieceType(m.pieceMoved);
     int score = ctx.historyTable[colorIdx][pieceType][m.toSquare];
-    if (ply > 0 && !board.moveHistory.empty()) {
+    if (ply > 0) {
+        Move prevMove = ctx.searchPrevMove[ply];
+        if (prevMove.fromSquare >= 0) {
+            int prevPieceIdx = pieceToZobristIndex(prevMove.pieceMoved);
+            if (prevPieceIdx >= 0 && prevPieceIdx < 12) {
+                score += ctx.continuationHistory[prevPieceIdx][m.toSquare];
+            }
+        }
+    } else if (!board.moveHistory.empty()) {
         Move prevMove = board.moveHistory.back();
         int prevPieceIdx = pieceToZobristIndex(prevMove.pieceMoved);
         if (prevPieceIdx >= 0 && prevPieceIdx < 12) {
@@ -1261,7 +1283,7 @@ int Lawliet::quiescence(Board& board, int alpha, int beta, int ply, uint64_t has
     if (!inCheck) {
         int staticEval = evaluateBoard(board, alpha, beta, &ctx);
         ctx.staticEvalCalls++;
-        ctx.staticEvalSum += std::abs(staticEval);
+        ctx.staticEvalSum += staticEval;
         if (staticEval > ctx.staticEvalMax) ctx.staticEvalMax = staticEval;
         if (staticEval < ctx.staticEvalMin) ctx.staticEvalMin = staticEval;
         if (staticEval >= beta) return beta;
@@ -1283,10 +1305,6 @@ int Lawliet::quiescence(Board& board, int alpha, int beta, int ply, uint64_t has
     for (int i = 0; i < ctx.moveCounts[ply]; ++i) {
         if (tm.shouldStop()) return 0;
         Move m = ctx.moveBuffers[ply][i];
-        int score = ctx.moveScores[ply][i];
-
-        // Smarter Quiescence Pruning: Prune bad captures (SEE < 0), but never prune promotions (score >= 12000000)
-        if (!inCheck && score < 10000000) continue;
 
         doMove(board, m, hash, ctx);
 
@@ -1296,6 +1314,16 @@ int Lawliet::quiescence(Board& board, int alpha, int beta, int ply, uint64_t has
             continue;
         }
         legalMovesSearched++;
+
+        bool givesCheck = board.isInCheck(board.turn);
+
+        // Prune bad captures (SEE < 0) that don't give check; never prune promotions or checks
+        if (!inCheck && ctx.moveScores[ply][i] < 10000000 && !givesCheck) {
+            undoMove(board, m, hash, ctx);
+            continue;
+        }
+
+        ctx.searchPrevMove[ply + 1] = m;
 
         int scoreVal = -quiescence(board, -beta, -alpha, ply + 1, hash, tm, ctx);
         undoMove(board, m, hash, ctx);
@@ -1313,7 +1341,7 @@ int Lawliet::quiescence(Board& board, int alpha, int beta, int ply, uint64_t has
     return alpha;
 }
 
-int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint64_t hash, TimeManager& tm, SearchContext& ctx, int lastIrreversible, Move excludedMove) {
+int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint64_t hash, TimeManager& tm, SearchContext& ctx, int lastIrreversible, int fiftyMove, Move excludedMove) {
     // Check stop flag instantly on every node to block score leakage upon timeout
     if (tm.stopFlag.load(std::memory_order_relaxed)) return 0;
 
@@ -1336,9 +1364,38 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
     scanEnd = std::max(0, scanEnd);
     for (int i = scanStart; i >= scanEnd; --i) {
         if (ctx.hashStack[i] == hash) {
-            return 0; // Immediate draw return
+            return 0;
         }
     }
+
+    // Fifty-move rule draw detection
+    if (fiftyMove >= 100) return 0;
+
+    // Insufficient material draw detection
+    {
+        int totalPieces = 0;
+        for (int i = 0; i < 12; i++) totalPieces += __builtin_popcountll(board.pieceBB[i]);
+        if (totalPieces == 2) return 0;
+        if (totalPieces == 3) {
+            int wMinors = __builtin_popcountll(board.pieceBB[1] | board.pieceBB[2]);
+            int bMinors = __builtin_popcountll(board.pieceBB[7] | board.pieceBB[8]);
+            if (wMinors == 1 || bMinors == 1) return 0;
+        }
+        if (totalPieces == 4) {
+            int wBishops = __builtin_popcountll(board.pieceBB[2]);
+            int bBishops = __builtin_popcountll(board.pieceBB[8]);
+            if (wBishops == 1 && bBishops == 1) {
+                int wBisSq = __builtin_ctzll(board.pieceBB[2]);
+                int bBisSq = __builtin_ctzll(board.pieceBB[8]);
+                bool wbLight = (((1ULL << wBisSq) & 0x55AA55AA55AA55AAULL) != 0);
+                bool bbLight = (((1ULL << bBisSq) & 0x55AA55AA55AA55AAULL) != 0);
+                if (wbLight == bbLight && (board.pieceBB[3] | board.pieceBB[9] | board.pieceBB[4] | board.pieceBB[10]) == 0)
+                    return 0;
+            }
+        }
+    }
+
+    ctx.fiftyMove[ply] = fiftyMove;
 
     if (depth <= 0) return quiescence(board, alpha, beta, ply, hash, tm, ctx);
 
@@ -1382,7 +1439,7 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
                 int rDepth = depth - 3;
 
                 // Search excluding the expected singular PV move
-                int rScore = negamax(board, rDepth, singularBeta - 1, singularBeta, ply, hash, tm, ctx, lastIrreversible, ttMove);
+                int rScore = negamax(board, rDepth, singularBeta - 1, singularBeta, ply, hash, tm, ctx, lastIrreversible, fiftyMove, ttMove);
                 if (tm.shouldStop()) return 0;
                 if (rScore < singularBeta) {
                     extension = 1; // Singular move confirmed! Extend 1 ply.
@@ -1420,7 +1477,7 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
         uint64_t epBackup = board.enPassantTarget; board.enPassantTarget = -1; board.turn = -board.turn;
 
         int R = 3 + depth / 6 + std::min(3, (staticEval - beta) / 200);
-        int nullScore = -negamax(board, depth - 1 - R, -beta, -beta + 1, ply + 1, nullHash, tm, ctx, lastIrreversible, Move{});
+        int nullScore = -negamax(board, depth - 1 - R, -beta, -beta + 1, ply + 1, nullHash, tm, ctx, lastIrreversible, fiftyMove + 1, Move{});
 
         board.turn = -board.turn; board.enPassantTarget = epBackup;
         if (tm.shouldStop()) return 0;
@@ -1438,7 +1495,7 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
         int probCutBeta = beta + 200; // Standard 200 cp margin
 
         // We run a fast shallow search with the elevated beta
-        int probScore = negamax(board, rDepth, probCutBeta - 1, probCutBeta, ply + 1, hash, tm, ctx, lastIrreversible, Move{});
+        int probScore = negamax(board, rDepth, probCutBeta - 1, probCutBeta, ply + 1, hash, tm, ctx, lastIrreversible, fiftyMove, Move{});
         if (tm.shouldStop()) return 0;
         if (probScore >= probCutBeta) {
             ctx.probCutSuccess++;
@@ -1514,7 +1571,7 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
         }
 
         // Safe Late Move Pruning and Futility Pruning after doMove (skipped in PV nodes)
-        if (depth <= 4 && !inCheck && !pvNode && isQuiet && !givesCheck && movesSearched >= maxMoves) {
+        if (depth <= 4 && !inCheck && !pvNode && isQuiet && !givesCheck && i >= maxMoves) {
             ctx.lmrApplicationsCount++;
             undoMove(board, m, hash, ctx);
             continue;
@@ -1540,6 +1597,7 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
         if (std::abs(m.pieceMoved) == 1 || m.pieceCaptured != 0) {
             nextLastIrreversible = ctx.hashStackIdx;
         }
+        int nextFifty = (std::abs(m.pieceMoved) == 1 || m.pieceCaptured != 0) ? 0 : fiftyMove + 1;
 
         int scoreValue;
         int nextDepth = depth - 1;
@@ -1548,7 +1606,8 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
         }
 
         if (movesSearched == 0) {
-            scoreValue = -negamax(board, nextDepth, -beta, -alpha, ply + 1, hash, tm, ctx, nextLastIrreversible);
+            ctx.searchPrevMove[ply + 1] = m;
+            scoreValue = -negamax(board, nextDepth, -beta, -alpha, ply + 1, hash, tm, ctx, nextLastIrreversible, nextFifty);
         } else {
             // Logarithmic & History-Based Late Move Reductions (LMR)
             int red = 0;
@@ -1592,7 +1651,15 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
                     int colorIdx = (board.turn == Board::WHITE) ? 0 : 1;
                     int pieceType = board.getPieceType(m.pieceMoved);
                     int hist = ctx.historyTable[colorIdx][pieceType][m.toSquare];
-                    if (ply > 0 && !board.moveHistory.empty()) {
+                    if (ply > 0) {
+                        Move prevMove = ctx.searchPrevMove[ply];
+                        if (prevMove.fromSquare >= 0) {
+                            int prevPieceIdx = pieceToZobristIndex(prevMove.pieceMoved);
+                            if (prevPieceIdx >= 0 && prevPieceIdx < 12) {
+                                hist += ctx.continuationHistory[prevPieceIdx][m.toSquare];
+                            }
+                        }
+                    } else if (!board.moveHistory.empty()) {
                         Move prevMove = board.moveHistory.back();
                         int prevPieceIdx = pieceToZobristIndex(prevMove.pieceMoved);
                         if (prevPieceIdx >= 0 && prevPieceIdx < 12) {
@@ -1607,19 +1674,20 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
                 red = std::max(0, std::min(red, nextDepth - 2));
             }
 
+            ctx.searchPrevMove[ply + 1] = m;
             if (red > 0) {
                 ctx.lmrReducedMoves++;
-                scoreValue = -negamax(board, nextDepth - red, -alpha - 1, -alpha, ply + 1, hash, tm, ctx, nextLastIrreversible);
+                scoreValue = -negamax(board, nextDepth - red, -alpha - 1, -alpha, ply + 1, hash, tm, ctx, nextLastIrreversible, nextFifty);
                 if (scoreValue > alpha) {
                     ctx.lmrSuccessfulReSearches++;
-                    scoreValue = -negamax(board, nextDepth, -alpha - 1, -alpha, ply + 1, hash, tm, ctx, nextLastIrreversible);
+                    scoreValue = -negamax(board, nextDepth, -alpha - 1, -alpha, ply + 1, hash, tm, ctx, nextLastIrreversible, nextFifty);
                 }
             } else {
-                scoreValue = -negamax(board, nextDepth, -alpha - 1, -alpha, ply + 1, hash, tm, ctx, nextLastIrreversible);
+                scoreValue = -negamax(board, nextDepth, -alpha - 1, -alpha, ply + 1, hash, tm, ctx, nextLastIrreversible, nextFifty);
             }
 
             if (pvNode && scoreValue > alpha && scoreValue < beta) {
-                scoreValue = -negamax(board, nextDepth, -beta, -alpha, ply + 1, hash, tm, ctx, nextLastIrreversible);
+                scoreValue = -negamax(board, nextDepth, -beta, -alpha, ply + 1, hash, tm, ctx, nextLastIrreversible, nextFifty);
             }
         }
 
@@ -1669,19 +1737,21 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
                 ctx.killerMoveCount++;
                 ctx.killerCutoffs++;
                 ctx.killerRankSum += 1;
-            } else if (ply > 0 && !board.moveHistory.empty()) {
-                Move prevMove = board.moveHistory.back();
-                Move counterMove = ctx.counterMoveTable[prevMove.fromSquare][prevMove.toSquare];
-                if (m.fromSquare == counterMove.fromSquare && m.toSquare == counterMove.toSquare) {
-                    ctx.countermoveCount++;
-                } else {
-                    ctx.historyHeuristicCount++;
-                    ctx.historyCutoffs++;
-                    int historyColorIdx = (board.turn == Board::WHITE) ? 0 : 1;
-                    int historyPieceType = board.getPieceType(m.pieceMoved);
-                    ctx.historyScoreSum += ctx.historyTable[historyColorIdx][historyPieceType][m.toSquare];
+            } else if (ply > 0) {
+                Move prevMove = ctx.searchPrevMove[ply];
+                if (prevMove.fromSquare >= 0) {
+                    Move counterMove = ctx.counterMoveTable[prevMove.fromSquare][prevMove.toSquare];
+                    if (m.fromSquare == counterMove.fromSquare && m.toSquare == counterMove.toSquare) {
+                        ctx.countermoveCount++;
+                    } else {
+                        ctx.historyHeuristicCount++;
+                        ctx.historyCutoffs++;
+                        int historyColorIdx = (board.turn == Board::WHITE) ? 0 : 1;
+                        int historyPieceType = board.getPieceType(m.pieceMoved);
+                        ctx.historyScoreSum += ctx.historyTable[historyColorIdx][historyPieceType][m.toSquare];
+                    }
                 }
-            } else {
+            } else if (!board.moveHistory.empty()) {
                 ctx.otherOrderCount++;
             }
             // Store Heuristics ONLY on a genuine beta cutoff
@@ -1694,13 +1764,27 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
                 ctx.historyTable[colorIdx][pieceType][m.toSquare] = std::clamp(ctx.historyTable[colorIdx][pieceType][m.toSquare], -40000, 40000);
 
                 // Countermove Heuristic update
-                if (ply > 0 && !board.moveHistory.empty()) {
+                if (ply > 0) {
+                    Move prevMove = ctx.searchPrevMove[ply];
+                    if (prevMove.fromSquare >= 0) {
+                        ctx.counterMoveTable[prevMove.fromSquare][prevMove.toSquare] = m;
+                    }
+                } else if (!board.moveHistory.empty()) {
                     Move prevMove = board.moveHistory.back();
                     ctx.counterMoveTable[prevMove.fromSquare][prevMove.toSquare] = m;
                 }
 
                 // Continuation History update
-                if (ply > 0 && !board.moveHistory.empty()) {
+                if (ply > 0) {
+                    Move prevMove = ctx.searchPrevMove[ply];
+                    if (prevMove.fromSquare >= 0) {
+                        int prevPieceIdx = pieceToZobristIndex(prevMove.pieceMoved);
+                        if (prevPieceIdx >= 0 && prevPieceIdx < 12) {
+                            ctx.continuationHistory[prevPieceIdx][m.toSquare] += std::min(2000, depth * depth);
+                            ctx.continuationHistory[prevPieceIdx][m.toSquare] = std::clamp(ctx.continuationHistory[prevPieceIdx][m.toSquare], -40000, 40000);
+                        }
+                    }
+                } else if (!board.moveHistory.empty()) {
                     Move prevMove = board.moveHistory.back();
                     int prevPieceIdx = pieceToZobristIndex(prevMove.pieceMoved);
                     if (prevPieceIdx >= 0 && prevPieceIdx < 12) {
@@ -1719,7 +1803,16 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
                         ctx.historyTable[pColorIdx][pPieceType][prevMove.toSquare] -= std::min(2000, depth * depth);
                         ctx.historyTable[pColorIdx][pPieceType][prevMove.toSquare] = std::clamp(ctx.historyTable[pColorIdx][pPieceType][prevMove.toSquare], -40000, 40000);
 
-                        if (ply > 0 && !board.moveHistory.empty()) {
+                        if (ply > 0) {
+                            Move oppPrevMove = ctx.searchPrevMove[ply];
+                            if (oppPrevMove.fromSquare >= 0) {
+                                int prevPieceIdx = pieceToZobristIndex(oppPrevMove.pieceMoved);
+                                if (prevPieceIdx >= 0 && prevPieceIdx < 12) {
+                                    ctx.continuationHistory[prevPieceIdx][prevMove.toSquare] -= std::min(2000, depth * depth);
+                                    ctx.continuationHistory[prevPieceIdx][prevMove.toSquare] = std::clamp(ctx.continuationHistory[prevPieceIdx][prevMove.toSquare], -40000, 40000);
+                                }
+                            }
+                        } else if (!board.moveHistory.empty()) {
                             Move oppPrevMove = board.moveHistory.back();
                             int prevPieceIdx = pieceToZobristIndex(oppPrevMove.pieceMoved);
                             if (prevPieceIdx >= 0 && prevPieceIdx < 12) {
@@ -1737,6 +1830,11 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
     // Proper end of node verification
     if (legalMovesSearched == 0) {
         return inCheck ? (-INF + ply) : 0;
+    }
+
+    // If all legal moves were pruned (but not illegal), return alpha (fail-low)
+    if (movesSearched == 0) {
+        bestScore = alpha;
     }
 
     // Static Evaluation Correction History (CorrHist) update
@@ -1757,7 +1855,7 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
         }
 
         int sideIdx = (board.turn == Board::WHITE) ? 0 : 1;
-        int& entry = ctx.corrHist[sideIdx][pKey % 16384];
+        int& entry = ctx.corrHist[sideIdx][pKey & 16383];
         int weight = std::min(128, depth * depth);
         entry = (entry * (1024 - weight) + diff * weight) / 1024;
         entry = std::clamp(entry, -8192, 8192);
@@ -1934,6 +2032,11 @@ Move Lawliet::thinkThread(Board& board, TimeManager& tm, SearchContext& ctx, int
         }
     }
 
+    // Initialize previous search move from game history for countermove at root
+    if (!board.moveHistory.empty()) {
+        ctx.searchPrevMove[0] = board.moveHistory.back();
+    }
+
     generateLegalMoves(board, board.turn, ctx.moveBuffers[0], ctx.moveCounts[0]);
     if (ctx.moveCounts[0] == 0) return Move{};
 
@@ -1973,7 +2076,7 @@ Move Lawliet::thinkThread(Board& board, TimeManager& tm, SearchContext& ctx, int
         if (targetTime < 10) targetTime = 10;
         tm.allocatedTimeMs.store(targetTime);
     }
-    int originalAllocatedTimeMs = tm.allocatedTimeMs.load(); uint64_t hash = computeHash(board);
+    uint64_t hash = computeHash(board);
     int lastScore = 0; const int effMaxDepth = maxDepth;
 
     auto validateMove = [&](const Move& m) {
@@ -2014,7 +2117,7 @@ Move Lawliet::thinkThread(Board& board, TimeManager& tm, SearchContext& ctx, int
 
         int reSearches = 0;
         while (true) {
-            int score = negamax(board, depth, alpha, beta, 0, hash, tm, ctx, ctx.rootLastIrreversible);
+            int score = negamax(board, depth, alpha, beta, 0, hash, tm, ctx, ctx.rootLastIrreversible, board.halfMoveClock);
             if (tm.shouldStop()) break;
 
             if (score <= alpha) {
@@ -2102,7 +2205,7 @@ Move Lawliet::thinkThread(Board& board, TimeManager& tm, SearchContext& ctx, int
         if (threadId == 0 && depth > 3 && !tm.infinite.load() && tm.totalTimeMs.load() > 0) {
             double instMult = std::abs(lastScore - prevScore) > 100 ? 1.5 : (std::abs(lastScore - prevScore) > 40 ? 1.2 : (std::abs(lastScore - prevScore) < 15 ? 0.85 : 1.0));
             double stabMult = bestMoveStability >= 3 ? 0.75 : (bestMoveStability == 0 ? 1.3 : 1.0);
-            int nextAllocated = static_cast<int>(originalAllocatedTimeMs * instMult * stabMult);
+            int nextAllocated = static_cast<int>(tm.allocatedTimeMs.load() * instMult * stabMult);
             int maxAllowed = tm.totalTimeMs.load() / 4; if (nextAllocated > maxAllowed) nextAllocated = maxAllowed;
             if (nextAllocated < 10) nextAllocated = 10;
             tm.allocatedTimeMs.store(nextAllocated);
