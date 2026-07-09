@@ -1442,8 +1442,9 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
         if ((currentKey ^ currentData) == hash) {
             int ttDepth = 0, dummyScore = 0; int16_t dummyPromo = 0; uint8_t ttFlag = 0, dummyAge = 0; uint16_t fromSq = 0, toSq = 0;
             unpackData(currentData, dummyScore, ttDepth, ttFlag, fromSq, toSq, dummyPromo, dummyAge);
-            if (ttDepth >= depth - 3 && (ttFlag == TT_EXACT || ttFlag == TT_BETA) && std::abs(ttScore) < INF - 1000) {
-                int singularBeta = ttScore - 2 * depth; // Singular margin = 2 * depth
+            int reReadScore = scoreFromTT(dummyScore, ply);
+            if (ttDepth >= depth - 3 && (ttFlag == TT_EXACT || ttFlag == TT_BETA) && std::abs(reReadScore) < INF - 1000) {
+                int singularBeta = reReadScore - 2 * depth; // Singular margin = 2 * depth
                 int rDepth = depth - 3;
 
                 // Search excluding the expected singular PV move
