@@ -1171,18 +1171,17 @@ bool Lawliet::probeTT(uint64_t key, int depth, int alpha, int beta, int& scoreOu
 int Lawliet::scoreMove(const Move& m, const Board& board, int ply, const Move& ttMove, SearchContext& ctx) const {
     if (ttMove.fromSquare != ttMove.toSquare && m.fromSquare == ttMove.fromSquare && m.toSquare == ttMove.toSquare && m.promotionPiece == ttMove.promotionPiece) return 20000000;
 
-    // Prioritize non-capture pawn promotions so they are evaluated properly in Main & Quiescence search
-    if (m.promotionPiece != 0) {
-        return 12000000 + std::abs(m.promotionPiece); // e.g. Queen promotion gets 12000005, Knight gets 12000002
-    }
-
     if (m.pieceCaptured != 0 || m.wasEnPassant) {
         int seeScore = see(board, m.fromSquare, m.toSquare, ctx);
         if (seeScore >= 0) return 10000000 + mvvLva[board.getPieceType(m.pieceMoved)][board.getPieceType(m.pieceCaptured) + 1];
         else {
             ctx.seeRejected++;
-            return -100000 + seeScore; // Sort bad captures (SEE < 0) safely below quiet moves
+            return -100000 + seeScore;
         }
+    }
+
+    if (m.promotionPiece != 0) {
+        return 9000000 + std::abs(m.promotionPiece);
     }
 
     if (ply < MAX_PLY) {
