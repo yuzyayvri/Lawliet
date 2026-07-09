@@ -57,15 +57,15 @@ void UCI::handleCommand(const std::string& line) {
                 name += token;
                 iss >> token;
             }
+            std::string value = "";
             if (token == "value") {
-                std::string value = "";
                 std::string part;
                 while (iss >> part) {
                     if (!value.empty()) value += " ";
                     value += part;
                 }
-                setOption(name, value);
             }
+            setOption(name, value);
         }
     }
 }
