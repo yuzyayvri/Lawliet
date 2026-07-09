@@ -1503,7 +1503,7 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
         int probCutBeta = beta + 200; // Standard 200 cp margin
 
         // We run a fast shallow search with the elevated beta
-        int probScore = negamax(board, rDepth, probCutBeta - 1, probCutBeta, ply + 1, hash, tm, ctx, lastIrreversible, fiftyMove, Move{});
+        int probScore = negamax(board, rDepth, probCutBeta - 1, probCutBeta, ply, hash, tm, ctx, lastIrreversible, fiftyMove, Move{});
         if (tm.shouldStop()) return 0;
         if (probScore >= probCutBeta) {
             ctx.probCutSuccess++;
