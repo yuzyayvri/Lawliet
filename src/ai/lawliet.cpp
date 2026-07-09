@@ -1419,6 +1419,7 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
     }
 
     bool pvNode = (beta - alpha > 1);
+    int originalDepth = depth;
 
     // Singular Extension Logic (PV-nodes, deep branches with valid TT moves)
     int extension = 0;
@@ -1757,7 +1758,7 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
                 ctx.killerMoves[ply][0] = m;
                 int colorIdx = (board.turn == Board::WHITE) ? 0 : 1;
                 int pieceType = board.getPieceType(m.pieceMoved);
-                ctx.historyTable[colorIdx][pieceType][m.toSquare] += std::min(2000, depth * depth);
+                ctx.historyTable[colorIdx][pieceType][m.toSquare] += std::min(2000, originalDepth * originalDepth);
                 ctx.historyTable[colorIdx][pieceType][m.toSquare] = std::clamp(ctx.historyTable[colorIdx][pieceType][m.toSquare], -40000, 40000);
 
                 // Countermove Heuristic update
@@ -1777,7 +1778,7 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
                     if (prevMove.fromSquare >= 0) {
                         int prevPieceIdx = pieceToZobristIndex(prevMove.pieceMoved);
                         if (prevPieceIdx >= 0 && prevPieceIdx < 12) {
-                            ctx.continuationHistory[prevPieceIdx][m.toSquare] += std::min(2000, depth * depth);
+                            ctx.continuationHistory[prevPieceIdx][m.toSquare] += std::min(2000, originalDepth * originalDepth);
                             ctx.continuationHistory[prevPieceIdx][m.toSquare] = std::clamp(ctx.continuationHistory[prevPieceIdx][m.toSquare], -40000, 40000);
                         }
                     }
@@ -1785,7 +1786,7 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
                     Move prevMove = board.moveHistory.back();
                     int prevPieceIdx = pieceToZobristIndex(prevMove.pieceMoved);
                     if (prevPieceIdx >= 0 && prevPieceIdx < 12) {
-                        ctx.continuationHistory[prevPieceIdx][m.toSquare] += std::min(2000, depth * depth);
+                        ctx.continuationHistory[prevPieceIdx][m.toSquare] += std::min(2000, originalDepth * originalDepth);
                         ctx.continuationHistory[prevPieceIdx][m.toSquare] = std::clamp(ctx.continuationHistory[prevPieceIdx][m.toSquare], -40000, 40000);
                     }
                 }
@@ -1797,7 +1798,7 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
                     if (prevQuiet) {
                         int pColorIdx = (board.turn == Board::WHITE) ? 0 : 1;
                         int pPieceType = board.getPieceType(prevMove.pieceMoved);
-                        ctx.historyTable[pColorIdx][pPieceType][prevMove.toSquare] -= std::min(2000, depth * depth);
+                        ctx.historyTable[pColorIdx][pPieceType][prevMove.toSquare] -= std::min(2000, originalDepth * originalDepth);
                         ctx.historyTable[pColorIdx][pPieceType][prevMove.toSquare] = std::clamp(ctx.historyTable[pColorIdx][pPieceType][prevMove.toSquare], -40000, 40000);
 
                         if (ply > 0) {
@@ -1805,7 +1806,7 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
                             if (oppPrevMove.fromSquare >= 0) {
                                 int prevPieceIdx = pieceToZobristIndex(oppPrevMove.pieceMoved);
                                 if (prevPieceIdx >= 0 && prevPieceIdx < 12) {
-                                    ctx.continuationHistory[prevPieceIdx][prevMove.toSquare] -= std::min(2000, depth * depth);
+                                    ctx.continuationHistory[prevPieceIdx][prevMove.toSquare] -= std::min(2000, originalDepth * originalDepth);
                                     ctx.continuationHistory[prevPieceIdx][prevMove.toSquare] = std::clamp(ctx.continuationHistory[prevPieceIdx][prevMove.toSquare], -40000, 40000);
                                 }
                             }
@@ -1813,7 +1814,7 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
                             Move oppPrevMove = board.moveHistory.back();
                             int prevPieceIdx = pieceToZobristIndex(oppPrevMove.pieceMoved);
                             if (prevPieceIdx >= 0 && prevPieceIdx < 12) {
-                                ctx.continuationHistory[prevPieceIdx][prevMove.toSquare] -= std::min(2000, depth * depth);
+                                ctx.continuationHistory[prevPieceIdx][prevMove.toSquare] -= std::min(2000, originalDepth * originalDepth);
                                 ctx.continuationHistory[prevPieceIdx][prevMove.toSquare] = std::clamp(ctx.continuationHistory[prevPieceIdx][prevMove.toSquare], -40000, 40000);
                             }
                         }
@@ -1853,7 +1854,7 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
 
         int sideIdx = (board.turn == Board::WHITE) ? 0 : 1;
         int& entry = ctx.corrHist[sideIdx][pKey & 16383];
-        int weight = std::min(128, depth * depth);
+        int weight = std::min(128, originalDepth * originalDepth);
         entry = (entry * (1024 - weight) + diff * weight) / 1024;
         entry = std::clamp(entry, -8192, 8192);
     }
