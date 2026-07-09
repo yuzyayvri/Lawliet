@@ -363,7 +363,6 @@ private:
     int see(const Board& board, int from, int to, SearchContext& ctx) const;
     uint64_t seeAttackers(const Board& board, int sq, uint64_t occupied) const;
     uint64_t seeXrays(const Board& board, int sq, uint64_t occupied) const;
-    uint64_t getPinnedPieces(const Board& board, int kingSq, int friendlyColor) const;
 
     uint64_t computeHash(const Board& board) const;
     void generateLegalMoves(const Board& board, int color, Move* out, int& count) const;

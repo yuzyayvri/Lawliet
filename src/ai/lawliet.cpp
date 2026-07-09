@@ -246,30 +246,6 @@ int Lawliet::see(const Board& board, int from, int to, SearchContext& ctx) const
     return gain[0];
 }
 
-uint64_t Lawliet::getPinnedPieces(const Board& board, int kingSq, int friendlyColor) const {
-    if (kingSq == -1) return 0;
-    uint64_t pinned = 0;
-    int friendlyColorIdx = (friendlyColor == Board::WHITE) ? 0 : 1, enemyColorIdx = 1 - friendlyColorIdx;
-    uint64_t enemySliders = board.pieceBB[enemyColorIdx * 6 + 4];
-    uint64_t enemyDiagonalSliders = enemySliders | board.pieceBB[enemyColorIdx * 6 + 2];
-    uint64_t bishopPinners = Board::getBishopAttacks(kingSq, board.colorBB[enemyColorIdx]) & enemyDiagonalSliders;
-    while (bishopPinners) {
-        int pinnerSq = __builtin_ctzll(bishopPinners); bishopPinners &= bishopPinners - 1;
-        uint64_t ray = Board::getBishopAttacks(kingSq, board.occ) & Board::getBishopAttacks(pinnerSq, board.occ);
-        uint64_t friendlyOnRay = ray & board.colorBB[friendlyColorIdx];
-        if (__builtin_popcountll(friendlyOnRay) == 1) pinned |= friendlyOnRay;
-    }
-    uint64_t enemyStraightSliders = enemySliders | board.pieceBB[enemyColorIdx * 6 + 3];
-    uint64_t rookPinners = Board::getRookAttacks(kingSq, board.colorBB[enemyColorIdx]) & enemyStraightSliders;
-    while (rookPinners) {
-        int pinnerSq = __builtin_ctzll(rookPinners); rookPinners &= rookPinners - 1;
-        uint64_t ray = Board::getRookAttacks(kingSq, board.occ) & Board::getRookAttacks(pinnerSq, board.occ);
-        uint64_t friendlyOnRay = ray & board.colorBB[friendlyColorIdx];
-        if (__builtin_popcountll(friendlyOnRay) == 1) pinned |= friendlyOnRay;
-    }
-    return pinned;
-}
-
 // ============================================================================
 // DYNAMIC TAPERED EVALUATION ENGINE
 // ============================================================================
