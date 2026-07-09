@@ -1482,8 +1482,8 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
 
     bool hasNonPawnMaterial = false;
     int turnColorIdx = (board.turn == Board::WHITE) ? 0 : 1;
-    uint64_t nonPawns = board.colorBB[turnColorIdx] ^ board.pieceBB[turnColorIdx * 6];
-    if (nonPawns ^ board.pieceBB[turnColorIdx * 6 + 5]) {
+    uint64_t nonPawns = board.colorBB[turnColorIdx] & ~board.pieceBB[turnColorIdx * 6];
+    if (nonPawns & ~board.pieceBB[turnColorIdx * 6 + 5]) {
         hasNonPawnMaterial = true;
     }
 
@@ -1532,7 +1532,7 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
     if (ctx.moveCounts[ply] == 0) return inCheck ? -INF + ply : 0;
 
     // Check and One-Reply Extensions
-    if (inCheck && ply < 16) {
+    if (inCheck && ply < 64) {
         if (ctx.moveCounts[ply] == 1) {
             depth += 2; // Forced reply extension!
             ctx.checkExtensions++;
