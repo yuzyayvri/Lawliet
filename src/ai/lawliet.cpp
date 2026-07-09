@@ -1001,10 +1001,12 @@ void Lawliet::generateCaptures(const Board& board, int color, Move* out, int& co
 }
 
 void Lawliet::doMove(Board& board, Move& m, uint64_t& hash, SearchContext& ctx) {
+#ifndef NDEBUG
     if (!board.checkInvariants()) {
         std::cerr << "FATAL: Board invariant broken at doMove entry" << std::endl;
         std::abort();
     }
+#endif
     if (ctx.hashStackIdx < 4096) ctx.hashStack[ctx.hashStackIdx++] = hash;
 
     hash ^= zobristSide;
@@ -1044,10 +1046,12 @@ void Lawliet::doMove(Board& board, Move& m, uint64_t& hash, SearchContext& ctx) 
 void Lawliet::undoMove(Board& board, Move& m, uint64_t& hash, SearchContext& ctx) {
     board.turn = -board.turn; board.revertMove(m);
     if (ctx.hashStackIdx > 0) hash = ctx.hashStack[--ctx.hashStackIdx];
+#ifndef NDEBUG
     if (!board.checkInvariants()) {
         std::cerr << "FATAL: Board invariant broken at undoMove exit" << std::endl;
         std::abort();
     }
+#endif
 }
 
 void Lawliet::storeTT(uint64_t key, int depth, int score, TTFlag flag, const Move& bestMove, int ply, SearchContext& ctx) {
