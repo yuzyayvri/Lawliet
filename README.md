@@ -8,11 +8,20 @@ Lawliet does come with a mini chess sandbox, but it's now an unused artifact fro
 Lawliet's first generation of releases are named **Intuition**. After that, the second generation is to be named **Deduction**, followed by **Mastermind** in the future. A generation is dictated by a major milestone or complete overhaul.
 
 ## Building
+If you want to build both the executable and texel tuner:
 ```bash
 mkdir build
 cd build
 cmake ..
 make
+```
+
+If you don't want to build the texel tuner, or vice versa, simply specify after make:
+```bash
+make chess_app
+```
+```bash
+make texel_tuner
 ```
 
 ## Usage
