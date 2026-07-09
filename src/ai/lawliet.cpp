@@ -1286,6 +1286,15 @@ int Lawliet::quiescence(Board& board, int alpha, int beta, int ply, uint64_t has
     if (ply >= MAX_PLY - 1) return evaluateBoard(board, alpha, beta, &ctx);
 
     bool inCheck = board.isInCheck(board.turn);
+    int originalAlpha = alpha;
+    Move bestMove = {};
+
+    // Probe TT for quiescence positions (depth = 0)
+    int ttScore = 0; Move ttMove; ttMove.fromSquare = -1;
+    if (!inCheck && probeTT(hash, 0, alpha, beta, ttScore, ttMove, ply, ctx) && std::abs(ttScore) < INF - 1000) {
+        if (ttScore >= beta) return beta;
+        if (ttScore > alpha) { alpha = ttScore; bestMove = ttMove; }
+    }
 
     // Stand pat (Static Evaluation) if not in check
     if (!inCheck) {
@@ -1338,14 +1347,18 @@ int Lawliet::quiescence(Board& board, int alpha, int beta, int ply, uint64_t has
 
         if (tm.shouldStop()) return 0;
         if (scoreVal >= beta) return beta;
-        if (scoreVal > alpha) alpha = scoreVal;
+        if (scoreVal > alpha) { alpha = scoreVal; bestMove = m; }
     }
 
     // Q-Search mate handling
     if (inCheck && legalMovesSearched == 0) {
+        storeTT(hash, 0, -INF + ply, TT_EXACT, Move{}, ply, ctx);
         return -INF + ply;
     }
 
+    TTFlag qFlag = TT_EXACT;
+    if (alpha <= originalAlpha) qFlag = TT_ALPHA;
+    storeTT(hash, 0, alpha, qFlag, bestMove, ply, ctx);
     return alpha;
 }
 
