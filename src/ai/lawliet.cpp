@@ -1870,7 +1870,9 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
         entry = std::clamp(entry, -8192, 8192);
     }
 
-    storeTT(hash, depth, bestScore, flag, bestMove, ply, ctx);
+    if (excludedMove.fromSquare == -1) {
+        storeTT(hash, depth, bestScore, flag, bestMove, ply, ctx);
+    }
     return bestScore;
 }
 
