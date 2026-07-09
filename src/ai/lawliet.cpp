@@ -1458,11 +1458,6 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
         }
     }
 
-    // Internal Iterative Reduction (IIR): Drastically saves nodes compared to IID when TT move is missing
-    if (depth >= 3 && ttMove.fromSquare == -1 && !inCheck) {
-        depth--;
-    }
-
     // Reverse Futility Pruning (RFP) up to depth 6 (skipped in PV nodes to maintain stability)
     if (depth <= 6 && !inCheck && !pvNode && std::abs(beta) < INF - 1000) {
         int margin = 120 * depth;
@@ -1510,6 +1505,11 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
             ctx.probCutSuccess++;
             return beta; // Cutoff confirmed with high probability!
         }
+    }
+
+    // Internal Iterative Reduction (IIR): Drastically saves nodes compared to IID when TT move is missing
+    if (depth >= 3 && ttMove.fromSquare == -1 && !inCheck) {
+        depth--;
     }
 
     bool futility = false;
