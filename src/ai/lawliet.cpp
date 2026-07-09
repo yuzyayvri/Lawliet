@@ -2155,7 +2155,7 @@ Move Lawliet::thinkThread(Board& board, TimeManager& tm, SearchContext& ctx, int
     int prevScore = 0;
 
     if (threadId == 0) {
-        ttAge.store((ttAge.load(std::memory_order_relaxed) + 1) & 63, std::memory_order_relaxed);
+        ttAge.store((ttAge.load(std::memory_order_relaxed) + 1) & 127, std::memory_order_relaxed);
     }
 
     for (int depth = startingDepth; depth <= effMaxDepth; ++depth) {

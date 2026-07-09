@@ -342,23 +342,23 @@ private:
     // Packs search depth, flag, move squares, and age into a single 64-bit value
     static inline uint64_t packData(int score, int depth, uint8_t flag, uint16_t fromSq, uint16_t toSq, int16_t promo, uint8_t age) {
         uint64_t s = static_cast<uint32_t>(score); // Bits 0-31
-        uint64_t d = static_cast<uint64_t>(std::clamp(depth, 0, 255)) << 32; // Bits 32-39
-        uint64_t flg = static_cast<uint64_t>(flag & 3) << 40; // Bits 40-41
-        uint64_t fSq = static_cast<uint64_t>(fromSq & 0x3F) << 42; // Bits 42-47
-        uint64_t tSq = static_cast<uint64_t>(toSq & 0x3F) << 48; // Bits 48-53
-        uint64_t p = static_cast<uint64_t>((promo + 8) & 0xF) << 54; // Bits 54-57
-        uint64_t a = static_cast<uint64_t>(age & 0x3F) << 58; // Bits 58-63
+        uint64_t d = static_cast<uint64_t>(std::clamp(depth, 0, 127)) << 32; // Bits 32-38 (7 bits, max 127)
+        uint64_t flg = static_cast<uint64_t>(flag & 3) << 39; // Bits 39-40
+        uint64_t fSq = static_cast<uint64_t>(fromSq & 0x3F) << 41; // Bits 41-46
+        uint64_t tSq = static_cast<uint64_t>(toSq & 0x3F) << 47; // Bits 47-52
+        uint64_t p = static_cast<uint64_t>((promo + 8) & 0xF) << 53; // Bits 53-56
+        uint64_t a = static_cast<uint64_t>(age & 0x7F) << 57; // Bits 57-63 (7 bits, max 127)
         return s | d | flg | fSq | tSq | p | a;
     }
 
     static inline void unpackData(uint64_t val, int& score, int& depth, uint8_t& flag, uint16_t& fromSq, uint16_t& toSq, int16_t& promo, uint8_t& age) {
         score = static_cast<int>(static_cast<int32_t>(val & 0xFFFFFFFFULL));
-        depth = static_cast<int>((val >> 32) & 0xFF);
-        flag = static_cast<uint8_t>((val >> 40) & 3);
-        fromSq = static_cast<uint16_t>((val >> 42) & 0x3F);
-        toSq = static_cast<uint16_t>((val >> 48) & 0x3F);
-        promo = static_cast<int16_t>(((val >> 54) & 0xF) - 8);
-        age = static_cast<uint8_t>((val >> 58) & 0x3F);
+        depth = static_cast<int>((val >> 32) & 0x7F);
+        flag = static_cast<uint8_t>((val >> 39) & 3);
+        fromSq = static_cast<uint16_t>((val >> 41) & 0x3F);
+        toSq = static_cast<uint16_t>((val >> 47) & 0x3F);
+        promo = static_cast<int16_t>(((val >> 53) & 0xF) - 8);
+        age = static_cast<uint8_t>((val >> 57) & 0x7F);
     }
 
     // Static Exchange Evaluation (SEE) Algorithm
