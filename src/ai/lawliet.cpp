@@ -1753,7 +1753,7 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
                 ctx.otherOrderCount++;
             }
             // Store Heuristics ONLY on a genuine beta cutoff
-            if (isQuiet && ply < MAX_PLY) {
+            if ((isQuiet || m.wasCastling) && ply < MAX_PLY) {
                 ctx.killerMoves[ply][1] = ctx.killerMoves[ply][0];
                 ctx.killerMoves[ply][0] = m;
                 int colorIdx = (board.turn == Board::WHITE) ? 0 : 1;
@@ -1794,7 +1794,7 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
                 // History penalty to previous quiet moves
                 for (int j = 0; j < i; ++j) {
                     Move prevMove = ctx.moveBuffers[ply][j];
-                    bool prevQuiet = (prevMove.pieceCaptured == 0 && prevMove.promotionPiece == 0 && !prevMove.wasCastling);
+                    bool prevQuiet = (prevMove.pieceCaptured == 0 && prevMove.promotionPiece == 0);
                     if (prevQuiet) {
                         int pColorIdx = (board.turn == Board::WHITE) ? 0 : 1;
                         int pPieceType = board.getPieceType(prevMove.pieceMoved);
