@@ -19,6 +19,7 @@ void UCI::handleCommand(const std::string& line) {
     if (cmd == "uci") {
         std::cout << "id name Lawliet" << std::endl;
         std::cout << "id author Yuzy" << std::endl;
+        printOptions();
         std::cout << "uciok" << std::endl;
     } else if (cmd == "isready") {
         std::cout << "readyok" << std::endl;
@@ -47,7 +48,7 @@ void UCI::handleCommand(const std::string& line) {
         exit(0);
     } else if (cmd == "setoption") {
         std::string token;
-        iss >> token; // consume "name"
+        iss >> token;
         if (token == "name") {
             std::string name = "";
             iss >> token;
@@ -63,25 +64,54 @@ void UCI::handleCommand(const std::string& line) {
                     if (!value.empty()) value += " ";
                     value += part;
                 }
-                std::string lowerName = name;
-                std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(), ::tolower);
-                if (lowerName == "bookpath" || lowerName == "book path") {
-                    engine.loadBook(value);
-                }
+                setOption(name, value);
             }
         }
+    }
+}
+
+void UCI::printOptions() {
+    std::cout << "option name Threads type spin default 1 min 1 max 1024" << std::endl;
+    std::cout << "option name Hash type spin default 128 min 1 max 1048576" << std::endl;
+    std::cout << "option name Clear Hash type button" << std::endl;
+    std::cout << "option name Ponder type check default false" << std::endl;
+    std::cout << "option name BookPath type string default book.bin" << std::endl;
+    std::cout << "option name Move Overhead type spin default 10 min 0 max 10000" << std::endl;
+}
+
+void UCI::setOption(const std::string& name, const std::string& value) {
+    std::string lowerName = name;
+    std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(), ::tolower);
+
+    if (lowerName == "threads") {
+        int n = std::stoi(value);
+        options.threads = std::max(1, n);
+        engine.setThreads(options.threads);
+    } else if (lowerName == "hash") {
+        int mb = std::stoi(value);
+        options.hashMB = std::max(1, mb);
+        engine.setHashSize(options.hashMB);
+    } else if (lowerName == "clear hash") {
+        engine.clearHash();
+    } else if (lowerName == "bookpath" || lowerName == "book path") {
+        options.bookPath = value;
+        engine.loadBook(value);
+    } else if (lowerName == "ponder") {
+        options.ponder = (value == "true");
+    } else if (lowerName == "move overhead") {
+        options.moveOverhead = std::max(0, std::stoi(value));
     }
 }
 
 void UCI::position(const std::string& line) {
     std::istringstream iss(line);
     std::string cmd, token;
-    iss >> cmd; // "position"
+    iss >> cmd;
     iss >> token;
 
     if (token == "startpos") {
         board.reset();
-        iss >> token; // consume "moves" if present
+        iss >> token;
     } else if (token == "fen") {
         std::string fen = "";
         while (iss >> token) {
@@ -105,7 +135,7 @@ void UCI::position(const std::string& line) {
 void UCI::go(const std::string& line) {
     std::istringstream iss(line);
     std::string cmd, token;
-    iss >> cmd; // "go"
+    iss >> cmd;
     int wtime = 0, btime = 0, winc = 0, binc = 0, movetime = 0, depth = 0, movestogo = 0;
     bool infinite = false;
     while (iss >> token) {
@@ -132,9 +162,11 @@ void UCI::go(const std::string& line) {
         engine.setDepth(64);
         timeManager.startInfiniteSearch();
     } else {
+        int wtimeAdj = std::max(0, wtime - options.moveOverhead);
+        int btimeAdj = std::max(0, btime - options.moveOverhead);
         timeManager.maxDepthLimit.store(64, std::memory_order_relaxed);
         engine.setDepth(64);
-        timeManager.startSearch(wtime, btime, winc, binc, movestogo, board.turn == Board::WHITE);
+        timeManager.startSearch(wtimeAdj, btimeAdj, winc, binc, movestogo, board.turn == Board::WHITE);
     }
     timeManager.onInfo = [this](int depth, int score, int64_t nodes, int timeMs, const std::string& pv) {
         printInfo(depth, score, nodes, timeMs, pv);

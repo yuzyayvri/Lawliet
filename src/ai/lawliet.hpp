@@ -1,5 +1,6 @@
 #pragma once
 #include "../core/board.hpp"
+#include "../core/engine_options.hpp"
 #include "../ai/time_manager.hpp"
 #include <vector>
 #include <limits>
@@ -286,9 +287,10 @@ private:
     static constexpr int MAX_QDEPTH = 64;
     static constexpr int MAX_TOTAL_PLY = MAX_PLY + MAX_QDEPTH + 10;
 
-    // Transposition Table: Shared, lock-free generational cache (~128MB footprint)
-    static constexpr int TT_SIZE = 1 << 23;
+    // Transposition Table: size computed from Hash option at runtime
+    int ttSize = 1 << 23;
     static constexpr int PAWN_SIZE = 16384; // Compact and L1/L2 cache-friendly size
+    int numThreads = 1;
 
     enum TTFlag : uint8_t { TT_EXACT = 0, TT_ALPHA = 1, TT_BETA = 2 };
     struct TTEntry {
@@ -384,13 +386,24 @@ private:
     void searchWorker(Board board, TimeManager& tm, int threadId, Move& outBestMove);
 
 public:
-    explicit Lawliet(int depth = 64);
+    explicit Lawliet(int depth);
+    explicit Lawliet(const EngineOptions& opts = EngineOptions(), int depth = 64);
     void setDepth(int depth);
     void reset();
     void loadBook(const std::string& path);
+    void setHashSize(int mb);
+    void clearHash();
+    void setThreads(int n);
 
     Move think(Board& board);
     Move think(Board& board, TimeManager& tm);
     int evaluateBoard(const Board& board, int alpha = -INF, int beta = INF, const SearchContext* ctx = nullptr) const;
     static std::string squareToUci(int sq);
+
+    const EngineOptions& getOptions() const { return options; }
+    void setOptions(const EngineOptions& opts) { options = opts; }
+
+private:
+    EngineOptions options;
+    void initTT();
 };

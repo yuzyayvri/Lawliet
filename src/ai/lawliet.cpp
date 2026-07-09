@@ -1064,7 +1064,7 @@ void Lawliet::undoMove(Board& board, Move& m, uint64_t& hash, SearchContext& ctx
 
 void Lawliet::storeTT(uint64_t key, int depth, int score, TTFlag flag, const Move& bestMove, int ply, SearchContext& ctx) {
     if (activeTm && activeTm->shouldStop()) return;
-    TTEntry& entry = transpositionTable[key & (TT_SIZE - 1)];
+    TTEntry& entry = transpositionTable[key & (ttSize - 1)];
 
     uint64_t currentKey = entry.key.load(std::memory_order_relaxed);
     uint64_t currentData = entry.data.load(std::memory_order_relaxed);
@@ -1110,7 +1110,7 @@ bool Lawliet::probeTT(uint64_t key, int depth, int alpha, int beta, int& scoreOu
     ctx.ttLookups++;
     ctx.ttOccupancy++;
     
-    const TTEntry& entry = transpositionTable[key & (TT_SIZE - 1)];
+    const TTEntry& entry = transpositionTable[key & (ttSize - 1)];
     uint64_t currentData = entry.data.load(std::memory_order_relaxed);
     uint64_t currentKey = entry.key.load(std::memory_order_relaxed);
 
@@ -1425,7 +1425,7 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
     int extension = 0;
     if (depth >= 8 && hasTT && ttMove.fromSquare != -1 && !inCheck && excludedMove.fromSquare == excludedMove.toSquare) {
         ctx.singularExtensionAttempts++;
-        TTEntry& entry = transpositionTable[hash & (TT_SIZE - 1)];
+        TTEntry& entry = transpositionTable[hash & (ttSize - 1)];
         uint64_t currentData = entry.data.load(std::memory_order_relaxed);
         uint64_t currentKey = entry.key.load(std::memory_order_relaxed);
         if ((currentKey ^ currentData) == hash) {
@@ -1872,7 +1872,7 @@ std::string Lawliet::squareToUci(int sq) {
 std::string Lawliet::extractPv(Board& board, uint64_t hash) {
     std::string pv = ""; Board temp = board; uint64_t h = hash;
     for (int i = 0; i < 20; ++i) {
-        TTEntry& entry = transpositionTable[h & (TT_SIZE - 1)];
+        TTEntry& entry = transpositionTable[h & (ttSize - 1)];
         uint64_t currentData = entry.data.load(std::memory_order_relaxed);
         uint64_t currentKey = entry.key.load(std::memory_order_relaxed);
         if (currentData == 0) break;
@@ -1926,12 +1926,51 @@ uint16_t OpeningBook::lookup(uint64_t polyKey) const {
 }
 
 Lawliet::Lawliet(int depth) : maxDepth(depth) {
-    initTables(); transpositionTable.resize(TT_SIZE);
+    initTables(); transpositionTable.resize(1 << 23);
     std::mt19937_64 rng(0x4C41776C696574ULL);
     for (int sq = 0; sq < 64; ++sq) for (int p = 0; p < 12; ++p) zobristPiece[sq][p] = rng();
     for (int c = 0; c < 16; ++c) zobristCastle[c] = rng();
     for (int e = 0; e < 64; ++e) zobristEp[e] = rng();
     zobristSide = rng(); book.load("book.bin");
+    ttSize = 1 << 23;
+    numThreads = 1;
+}
+
+Lawliet::Lawliet(const EngineOptions& opts, int depth) : maxDepth(depth), options(opts) {
+    initTT();
+}
+
+void Lawliet::initTT() {
+    initTables();
+    ttSize = 1;
+    while (static_cast<int64_t>(ttSize) * 2 <= (static_cast<int64_t>(options.hashMB) * 1024 * 1024 / 16))
+        ttSize *= 2;
+    transpositionTable.resize(ttSize);
+    std::mt19937_64 rng(0x4C41776C696574ULL);
+    for (int sq = 0; sq < 64; ++sq) for (int p = 0; p < 12; ++p) zobristPiece[sq][p] = rng();
+    for (int c = 0; c < 16; ++c) zobristCastle[c] = rng();
+    for (int e = 0; e < 64; ++e) zobristEp[e] = rng();
+    zobristSide = rng();
+    numThreads = std::max(1, options.threads);
+    book.load(options.bookPath);
+}
+
+void Lawliet::setHashSize(int mb) {
+    options.hashMB = mb;
+    ttSize = 1;
+    while (static_cast<int64_t>(ttSize) * 2 <= (static_cast<int64_t>(mb) * 1024 * 1024 / 16))
+        ttSize *= 2;
+    transpositionTable.resize(ttSize);
+    for (auto& entry : transpositionTable) entry = TTEntry{};
+}
+
+void Lawliet::clearHash() {
+    for (auto& entry : transpositionTable) entry = TTEntry{};
+}
+
+void Lawliet::setThreads(int n) {
+    numThreads = std::max(1, n);
+    options.threads = numThreads;
 }
 
 void Lawliet::loadBook(const std::string& path) { if (!book.load(path)) std::cout << "info string Warning: Opening book could not be loaded from path: " << path << std::endl; }
@@ -1970,8 +2009,8 @@ Move Lawliet::think(Board& board, TimeManager& tm) {
             }
         }
     }
-    const int numThreads = 4; std::vector<std::thread> workers; std::vector<Move> threadBestMoves(numThreads);
-    for (int i = 1; i < numThreads; ++i) workers.push_back(std::thread(&Lawliet::searchWorker, this, board, std::ref(tm), i, std::ref(threadBestMoves[i])));
+    int activeThreads = std::max(1, numThreads); std::vector<std::thread> workers; std::vector<Move> threadBestMoves(activeThreads);
+    for (int i = 1; i < activeThreads; ++i) workers.push_back(std::thread(&Lawliet::searchWorker, this, board, std::ref(tm), i, std::ref(threadBestMoves[i])));
     auto masterCtx = std::make_unique<SearchContext>(); Move bestMove = thinkThread(board, tm, *masterCtx, 0);
 
     // Stop timer to signal helper threads
@@ -2217,7 +2256,7 @@ Move Lawliet::thinkThread(Board& board, TimeManager& tm, SearchContext& ctx, int
         ctx.bestScore = lastScore;
         if (validateMove(ctx.rootBestMove)) completedDepthBestMove = ctx.rootBestMove;
         else {
-            TTEntry& entry = transpositionTable[hash & (TT_SIZE - 1)];
+            TTEntry& entry = transpositionTable[hash & (ttSize - 1)];
             uint64_t currentData = entry.data.load(std::memory_order_relaxed);
             uint64_t currentKey = entry.key.load(std::memory_order_relaxed);
             if (currentData != 0 && (currentKey ^ currentData) == hash) {
