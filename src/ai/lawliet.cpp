@@ -170,7 +170,7 @@ void Lawliet::initTables() {
             if (d == 0 || m == 0) {
                 lmrTable[d][m] = 0;
             } else {
-                lmrTable[d][m] = static_cast<int>(0.5 + std::log(d) * std::log(m) / 2.0);
+                lmrTable[d][m] = static_cast<int>(0.5 + std::log(d) * std::log(m) / 1.5);
             }
         }
     }
