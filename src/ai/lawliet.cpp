@@ -1181,7 +1181,7 @@ int Lawliet::scoreMove(const Move& m, const Board& board, int ply, const Move& t
     }
 
     if (m.promotionPiece != 0) {
-        return 9000000 + std::abs(m.promotionPiece);
+        return 15000000 + std::abs(m.promotionPiece);
     }
 
     if (ply < MAX_PLY) {
