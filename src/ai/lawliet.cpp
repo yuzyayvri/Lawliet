@@ -338,7 +338,7 @@ int Lawliet::evaluateBoard(const Board& board, int alpha, int beta, const Search
             if (__builtin_popcountll(whitePawns & fileMasks[file]) > 1) { pawnMg += g_Params.DoubledPawnMg; pawnEg += g_Params.DoubledPawnEg; }
             if (!(whitePawns & pawnIsolatedMask[sq])) { pawnMg += g_Params.IsolatedPawnMg; pawnEg += g_Params.IsolatedPawnEg; }
             if (rank >= 2 && rank <= 5) {
-                uint64_t ranksBehind = ~((1ULL << (rank * 8)) - 1);
+                uint64_t ranksBehind = ~((1ULL << ((rank + 1) * 8)) - 1);
                 if (!(pawnIsolatedMask[sq] & whitePawns & ranksBehind) && (Board::pawnAttacks[0][sq - 8] & blackPawns)) { pawnMg += g_Params.BackwardPawnMg; pawnEg += g_Params.BackwardPawnEg; }
             }
 
@@ -405,7 +405,7 @@ int Lawliet::evaluateBoard(const Board& board, int alpha, int beta, const Search
             if (__builtin_popcountll(blackPawns & fileMasks[file]) > 1) { pawnMg -= g_Params.DoubledPawnMg; pawnEg -= g_Params.DoubledPawnEg; }
             if (!(blackPawns & pawnIsolatedMask[sq])) { pawnMg -= g_Params.IsolatedPawnMg; pawnEg -= g_Params.IsolatedPawnEg; }
             if (rank >= 2 && rank <= 5) {
-                uint64_t ranksBehind = (1ULL << ((rank + 1) * 8)) - 1;
+                uint64_t ranksBehind = (1ULL << (rank * 8)) - 1;
                 if (!(pawnIsolatedMask[sq] & blackPawns & ranksBehind) && (Board::pawnAttacks[1][sq + 8] & whitePawns)) { pawnMg -= g_Params.BackwardPawnMg; pawnEg -= g_Params.BackwardPawnEg; }
             }
 
