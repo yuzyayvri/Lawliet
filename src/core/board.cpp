@@ -534,6 +534,24 @@ std::string Board::getStatusText() const {
     return "";
 }
 
+bool Board::checkInvariants() const {
+    if (__builtin_popcountll(pieceBB[5]) != 1) return false;
+    if (__builtin_popcountll(pieceBB[11]) != 1) return false;
+
+    uint64_t wPieces = 0, bPieces = 0, expectedOcc = 0;
+    for (int i = 0; i < 6; ++i) { wPieces |= pieceBB[i]; expectedOcc |= pieceBB[i]; }
+    for (int i = 6; i < 12; ++i) { bPieces |= pieceBB[i]; expectedOcc |= pieceBB[i]; }
+
+    if (occ != expectedOcc) return false;
+    if (colorBB[0] != wPieces) return false;
+    if (colorBB[1] != bPieces) return false;
+    if (colorBB[0] & colorBB[1]) return false;
+
+    if (turn != WHITE && turn != BLACK) return false;
+    if (enPassantTarget != -1 && (enPassantTarget < 0 || enPassantTarget > 63)) return false;
+    return true;
+}
+
 bool Board::makeMove(int from, int to, int promoChoice) { return makeMoveWithFullValidation(from, to, promoChoice); }
 
 void Board::undoMove() {

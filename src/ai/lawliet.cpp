@@ -1037,6 +1037,10 @@ void Lawliet::generateCaptures(const Board& board, int color, Move* out, int& co
 }
 
 void Lawliet::doMove(Board& board, Move& m, uint64_t& hash, SearchContext& ctx) {
+    if (!board.checkInvariants()) {
+        std::cerr << "FATAL: Board invariant broken at doMove entry" << std::endl;
+        std::abort();
+    }
     if (ctx.hashStackIdx < 4096) ctx.hashStack[ctx.hashStackIdx++] = hash;
 
     hash ^= zobristSide;
@@ -1076,6 +1080,10 @@ void Lawliet::doMove(Board& board, Move& m, uint64_t& hash, SearchContext& ctx) 
 void Lawliet::undoMove(Board& board, Move& m, uint64_t& hash, SearchContext& ctx) {
     board.turn = -board.turn; board.revertMove(m);
     if (ctx.hashStackIdx > 0) hash = ctx.hashStack[--ctx.hashStackIdx];
+    if (!board.checkInvariants()) {
+        std::cerr << "FATAL: Board invariant broken at undoMove exit" << std::endl;
+        std::abort();
+    }
 }
 
 void Lawliet::storeTT(uint64_t key, int depth, int score, TTFlag flag, const Move& bestMove, int ply, SearchContext& ctx) {
@@ -2001,6 +2009,33 @@ Move Lawliet::think(Board& board, TimeManager& tm) {
     masterCtx->threadStopEvents = 1;
 
     printSearchStats(*masterCtx, maxDepth, masterCtx->bestScore, elapsed, totalNodes);
+
+    // Final safety check: verify the returned move is legal before sending to GUI
+    if (bestMove.fromSquare != bestMove.toSquare) {
+        bool legal = false;
+        for (int i = 0; i < count; ++i) {
+            if (moves[i].fromSquare == bestMove.fromSquare &&
+                moves[i].toSquare == bestMove.toSquare &&
+                moves[i].promotionPiece == bestMove.promotionPiece) {
+                legal = true;
+                break;
+            }
+        }
+        if (!legal || !board.leavesKingInCheck(bestMove.fromSquare, bestMove.toSquare,
+                                                std::abs(bestMove.promotionPiece))) {
+            std::cerr << "FATAL: Engine returned illegal move! "
+                      << squareToUci(bestMove.fromSquare) << squareToUci(bestMove.toSquare)
+                      << " depth=" << maxDepth << std::endl;
+            // Fallback: return first legal move
+            for (int i = 0; i < count; ++i) {
+                if (board.leavesKingInCheck(moves[i].fromSquare, moves[i].toSquare,
+                                            std::abs(moves[i].promotionPiece))) {
+                    bestMove = moves[i];
+                    break;
+                }
+            }
+        }
+    }
 
     activeTm = nullptr; return bestMove;
 }

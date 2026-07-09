@@ -82,6 +82,7 @@ public:
     std::string formatMoveNotation(const Move& m) const;
     int findKing(int color) const;
     bool leavesKingInCheck(int from, int to, int promoChoice) const;
+    bool checkInvariants() const;
 
     static constexpr int WHITE = 1;
     static constexpr int BLACK = -1;
