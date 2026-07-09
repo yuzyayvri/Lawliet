@@ -1399,8 +1399,11 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
     bool hasTT = false;
     // Exempt excludedMove (Singular Search) from normal TT probes
     if (excludedMove.fromSquare == excludedMove.toSquare) {
-        hasTT = probeTT(hash, depth, alpha, beta, ttScore, ttMove, ply, ctx);
-        if (hasTT && ply > 0) return ttScore;
+        bool ttCutoff = probeTT(hash, depth, alpha, beta, ttScore, ttMove, ply, ctx);
+        if (ttCutoff && ply > 0) return ttScore;
+        // Singular extension needs a TT move even without a cutoff;
+        // probeTT populates ttMove for any existing entry before the cutoff check.
+        hasTT = ttCutoff || (ttMove.fromSquare != -1);
     }
 
     bool inCheck = board.isInCheck(board.turn);
