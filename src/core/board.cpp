@@ -597,6 +597,10 @@ bool Board::makeMoveWithFullValidation(int from, int to, int promoChoice) {
     enPassantTarget = -1;
     if (std::abs(piece) == 1 && std::abs((to / 8) - (from / 8)) == 2) enPassantTarget = (from + to) / 2;
 
+    // Update 50-move rule clock
+    if (std::abs(piece) == 1 || m.pieceCaptured != 0) halfMoveClock = 0;
+    else halfMoveClock++;
+
     moveHistory.push_back(m); moveNotation.push_back(formatMoveNotation(m));
     turn = -turn;
     if (isCheckmate()) gameResult = (turn == WHITE) ? -1 : 1;
