@@ -1416,9 +1416,9 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
     bool pvNode = (beta - alpha > 1);
     int originalDepth = depth;
 
-    // Singular Extension Logic (PV-nodes, deep branches with valid TT moves)
+    // Singular Extension Logic: only at root (ply == 0) to control tree size at depth >= 8
     int extension = 0;
-    if (depth >= 8 && hasTT && ttMove.fromSquare != -1 && !inCheck && excludedMove.fromSquare == excludedMove.toSquare) {
+    if (depth >= 8 && hasTT && ttMove.fromSquare != -1 && !inCheck && ply == 0 && excludedMove.fromSquare == excludedMove.toSquare) {
         ctx.singularExtensionAttempts++;
         TTEntry& entry = transpositionTable[hash & (ttSize - 1)];
         uint64_t currentData = entry.data.load(std::memory_order_relaxed);
@@ -2135,6 +2135,9 @@ Move Lawliet::thinkThread(Board& board, TimeManager& tm, SearchContext& ctx, int
 
         if (tm.totalTimeMs.load() > 0) { int maxAllowed = tm.totalTimeMs.load() / 5; if (targetTime > maxAllowed) targetTime = maxAllowed; }
         if (targetTime < 10) targetTime = 10;
+        // Cap at hard limit set by TimeManager
+        int hard = tm.hardLimitMs.load();
+        if (hard > 0) targetTime = std::min(targetTime, hard);
         tm.allocatedTimeMs.store(targetTime);
     }
     uint64_t hash = computeHash(board);
@@ -2194,6 +2197,8 @@ Move Lawliet::thinkThread(Board& board, TimeManager& tm, SearchContext& ctx, int
                     int maxAllowed = tm.totalTimeMs.load() / 3;
                     int newAlloc = static_cast<int>(tm.allocatedTimeMs.load() * 1.3);
                     if (newAlloc > maxAllowed) newAlloc = maxAllowed;
+                    int hard = tm.hardLimitMs.load();
+                    if (hard > 0 && newAlloc > hard) newAlloc = hard;
                     tm.allocatedTimeMs.store(newAlloc);
                 }
             } else if (score >= beta) {
@@ -2208,6 +2213,8 @@ Move Lawliet::thinkThread(Board& board, TimeManager& tm, SearchContext& ctx, int
                     int maxAllowed = tm.totalTimeMs.load() / 3;
                     int newAlloc = static_cast<int>(tm.allocatedTimeMs.load() * 1.3);
                     if (newAlloc > maxAllowed) newAlloc = maxAllowed;
+                    int hard = tm.hardLimitMs.load();
+                    if (hard > 0 && newAlloc > hard) newAlloc = hard;
                     tm.allocatedTimeMs.store(newAlloc);
                 }
             } else {
@@ -2268,6 +2275,8 @@ Move Lawliet::thinkThread(Board& board, TimeManager& tm, SearchContext& ctx, int
             double stabMult = bestMoveStability >= 3 ? 0.75 : (bestMoveStability == 0 ? 1.3 : 1.0);
             int nextAllocated = static_cast<int>(tm.allocatedTimeMs.load() * instMult * stabMult);
             int maxAllowed = tm.totalTimeMs.load() / 4; if (nextAllocated > maxAllowed) nextAllocated = maxAllowed;
+            int hard = tm.hardLimitMs.load();
+            if (hard > 0 && nextAllocated > hard) nextAllocated = hard;
             if (nextAllocated < 10) nextAllocated = 10;
             tm.allocatedTimeMs.store(nextAllocated);
             if (depth >= 10 && bestMoveStability >= 5 && std::abs(lastScore - prevScore) < 8 && complexityScore < 1.5) break;

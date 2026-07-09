@@ -16,6 +16,7 @@ public:
     std::atomic<int> totalTimeMs{0};
     std::atomic<bool> infinite{false};
     std::atomic<int64_t> startTimeMs{0}; // Thread-safe atomic start time timestamp
+    std::atomic<int> hardLimitMs{0}; // Fixed ceiling; never moves once set
 
     void startSearch(int wtime, int btime, int winc, int binc, int movestogo, bool isWhite);
     void startDepthSearch(int depth);
