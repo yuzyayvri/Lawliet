@@ -866,18 +866,6 @@ int Lawliet::evaluateBoard(const Board& board, int alpha, int beta, const Search
         if (board.castleBQ) mgScore -= g_Params.CastleWQMg;
     }
 
-    if (phase >= 16) {
-        if (board.getPiece(57) == 2) mgScore -= 20; // White Knight on b1
-        if (board.getPiece(62) == 2) mgScore -= 20; // White Knight on g1
-        if (board.getPiece(58) == 3) mgScore -= 15; // White Bishop on c1
-        if (board.getPiece(61) == 3) mgScore -= 15; // White Bishop on f1
-
-        if (board.getPiece(1) == -2) mgScore += 20;  // Black Knight on b8
-        if (board.getPiece(6) == -2) mgScore += 20;  // Black Knight on g8
-        if (board.getPiece(2) == -3) mgScore += 15;  // Black Bishop on c8
-        if (board.getPiece(5) == -3) mgScore += 15;  // Black Bishop on f8
-    }
-
     // --- Opposite-Colored Bishops Endgame Scale Factor ---
     int wMinors = __builtin_popcountll(board.pieceBB[1] | board.pieceBB[2]);
     int bMinors = __builtin_popcountll(board.pieceBB[7] | board.pieceBB[8]);
