@@ -101,21 +101,23 @@ void NNUE::extractFeatures(const uint64_t* pieceBB,
 
 void NNUE::refreshAccumulator(NNUEAccumulator& acc,
                               const uint32_t* features, int count) const {
-    std::memcpy(acc.values, ft_biases_, NNUE_FT_OUTPUTS * sizeof(int16_t));
+    // Widening copy: int16_t biases -> int32_t accumulator
+    for (int j = 0; j < NNUE_FT_OUTPUTS; ++j)
+        acc.values[j] = (int32_t)ft_biases_[j];
     for (int i = 0; i < count; ++i) {
         const int16_t* col = &ft_weights_[features[i] * (size_t)NNUE_FT_OUTPUTS];
         for (int j = 0; j < NNUE_FT_OUTPUTS; ++j)
-            acc.values[j] += col[j];
+            acc.values[j] += (int32_t)col[j];
     }
 }
 
-int NNUE::forward(const NNUEAccumulator& acc) const {
+int NNUE::forward(const int16_t* values) const {
     // Hidden Layer 1: 256 -> 32
     int32_t l1[NNUE_L1_SIZE];
     for (int i = 0; i < NNUE_L1_SIZE; ++i) {
         int32_t sum = l1_biases_[i];
         for (int j = 0; j < NNUE_FT_OUTPUTS; ++j)
-            sum += (int32_t)acc.values[j] * (int32_t)l1_weights_[i * NNUE_FT_OUTPUTS + j];
+            sum += (int32_t)values[j] * (int32_t)l1_weights_[i * NNUE_FT_OUTPUTS + j];
         l1[i] = clip(sum / NNUE_QB);
     }
 
@@ -141,25 +143,35 @@ int NNUE::evaluate(const uint32_t* whiteFeat, int wCount,
                    const uint32_t* blackFeat, int bCount) const {
     if (!weights_loaded_) return 0;
 
-    // Combine both king perspectives into a single accumulator.
+    // Build int32 accumulator (safe from signed overflow UB).
     // The HalfKP index encodes the king square: (kingSq*10 + pType)*64 + pSq.
     // Since wKing != bKing, white and black features index into disjoint regions
     // of the weight matrix. Starting from biases, we accumulate BOTH perspectives.
     NNUEAccumulator acc;
-    std::memcpy(acc.values, ft_biases_, NNUE_FT_OUTPUTS * sizeof(int16_t));
+    for (int j = 0; j < NNUE_FT_OUTPUTS; ++j)
+        acc.values[j] = (int32_t)ft_biases_[j];
 
     for (int i = 0; i < wCount; ++i) {
         const int16_t* col = &ft_weights_[whiteFeat[i] * (size_t)NNUE_FT_OUTPUTS];
         for (int j = 0; j < NNUE_FT_OUTPUTS; ++j)
-            acc.values[j] += col[j];
+            acc.values[j] += (int32_t)col[j];
     }
     for (int i = 0; i < bCount; ++i) {
         const int16_t* col = &ft_weights_[blackFeat[i] * (size_t)NNUE_FT_OUTPUTS];
         for (int j = 0; j < NNUE_FT_OUTPUTS; ++j)
-            acc.values[j] += col[j];
+            acc.values[j] += (int32_t)col[j];
     }
 
-    return forward(acc);
+    // Saturate-reduce to int16 range for the quantized forward pass.
+    // The network was trained with int16 accumulators; exceeding that range
+    // would produce incorrect CReLU activations in the hidden layers.
+    int16_t saturated[NNUE_FT_OUTPUTS];
+    for (int j = 0; j < NNUE_FT_OUTPUTS; ++j) {
+        int32_t v = acc.values[j];
+        saturated[j] = (int16_t)std::max(-32768, std::min(32767, v));
+    }
+
+    return forward(saturated);
 }
 
 float NNUE::predict(const uint64_t* pieceBB) const {

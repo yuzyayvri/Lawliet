@@ -18,7 +18,7 @@ constexpr int NNUE_QA    = 255;   // Input quantization
 constexpr int NNUE_QB    = 64;    // Hidden quantization
 
 struct NNUEAccumulator {
-    int16_t values[NNUE_FT_OUTPUTS];
+    int32_t values[NNUE_FT_OUTPUTS];
 };
 
 class NNUE {
@@ -33,8 +33,9 @@ public:
     void refreshAccumulator(NNUEAccumulator& acc,
                             const uint32_t* features, int count) const;
 
-    // Forward pass from accumulator -> centipawn score
-    int forward(const NNUEAccumulator& acc) const;
+    // Forward pass from int16 accumulator values -> centipawn score.
+    // Takes saturated int16 values (network was trained for int16 range).
+    int forward(const int16_t* values) const;
 
     // Evaluate position (returns centipawn score from side-to-move perspective)
     int evaluate(const uint32_t* whiteFeatures, int wCount,
