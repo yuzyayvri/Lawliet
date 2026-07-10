@@ -167,10 +167,14 @@ void Lawliet::initTables() {
 
     for (int d = 0; d < 128; ++d) {
         for (int m = 0; m < 256; ++m) {
-            if (d == 0 || m == 0) {
+            if (d <= 0 || m <= 0) {
                 lmrTable[d][m] = 0;
             } else {
-                lmrTable[d][m] = static_cast<int>(0.5 + std::log(d) * std::log(m) / 1.5);
+                double base = std::log(d) * std::log(m) / 1.5;
+                // More aggressive for very late moves
+                if (m >= 6) base += 0.5;
+                if (m >= 12) base += 0.5;
+                lmrTable[d][m] = static_cast<int>(0.5 + base);
             }
         }
     }
@@ -250,6 +254,17 @@ int Lawliet::see(const Board& board, int from, int to, SearchContext& ctx) const
 // DYNAMIC TAPERED EVALUATION ENGINE
 // ============================================================================
 int Lawliet::evaluateBoard(const Board& board, int alpha, int beta, const SearchContext* ctx) const {
+    // NNUE evaluation path
+    if (nnue.isLoaded()) {
+        uint32_t whiteFeat[256], blackFeat[256];
+        int wCount = 0, bCount = 0;
+        NNUE::extractFeatures(board.pieceBB, whiteFeat, wCount, blackFeat, bCount);
+        int score = nnue.evaluate(whiteFeat, wCount, blackFeat, bCount);
+        // NNUE returns score from white's perspective; adjust for side to move
+        int relativeScore = (board.turn == Board::WHITE) ? score : -score;
+        return relativeScore + g_Params.TempoBonus;
+    }
+
     int phase = 0;
     for (int i = 0; i < 12; ++i) {
         int type = i % 6, count = __builtin_popcountll(board.pieceBB[i]);
@@ -474,7 +489,7 @@ int Lawliet::evaluateBoard(const Board& board, int alpha, int beta, const Search
         int file = sq % 8, rank = sq / 8;
         uint64_t behindMask = fileMasks[file] & ~((1ULL << ((rank + 1) * 8)) - 1);
         if (board.pieceBB[3] & behindMask) { mgScore += g_Params.RookBehindFriendlyPassedPawnMg; egScore += g_Params.RookBehindFriendlyPassedPawnEg; }
-        if (board.pieceBB[9] & behindMask) { mgScore += g_Params.RookBehindEnemyPassedPawnMg; egScore += g_Params.RookBehindEnemyPassedPawnEg; }
+        if (board.pieceBB[9] & behindMask) { mgScore -= g_Params.RookBehindEnemyPassedPawnMg; egScore -= g_Params.RookBehindEnemyPassedPawnEg; }
 
         // Dynamic King proximity bonus for White passed pawn
         if (wkSq != -1 && bkSq != -1) {
@@ -490,7 +505,7 @@ int Lawliet::evaluateBoard(const Board& board, int alpha, int beta, const Search
         int file = sq % 8, rank = sq / 8;
         uint64_t behindMask = fileMasks[file] & ((1ULL << (rank * 8)) - 1);
         if (board.pieceBB[9] & behindMask) { mgScore -= g_Params.RookBehindFriendlyPassedPawnMg; egScore -= g_Params.RookBehindFriendlyPassedPawnEg; }
-        if (board.pieceBB[3] & behindMask) { mgScore -= g_Params.RookBehindEnemyPassedPawnMg; egScore -= g_Params.RookBehindEnemyPassedPawnEg; }
+        if (board.pieceBB[3] & behindMask) { mgScore += g_Params.RookBehindEnemyPassedPawnMg; egScore += g_Params.RookBehindEnemyPassedPawnEg; }
 
         // Dynamic King proximity bonus for Black passed pawn
         if (wkSq != -1 && bkSq != -1) {
@@ -1445,9 +1460,11 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
     bool pvNode = (beta - alpha > 1);
     int originalDepth = depth;
 
-    // Singular Extension Logic: only at root (ply == 0) to control tree size at depth >= 8
+    // Singular Extension Logic: apply at any ply to strengthen tactical search
+    // Use ply-dependent depth requirement: easier at root, harder deeper in tree
     int extension = 0;
-    if (depth >= 8 && hasTT && ttMove.fromSquare != -1 && !inCheck && ply == 0 && excludedMove.fromSquare == excludedMove.toSquare) {
+    int seDepthReq = (ply <= 1) ? 8 : 7;
+    if (depth >= seDepthReq && hasTT && ttMove.fromSquare != -1 && !inCheck && excludedMove.fromSquare == excludedMove.toSquare && std::abs(beta) < INF - 1000) {
         ctx.singularExtensionAttempts++;
         TTEntry& entry = transpositionTable[hash & (ttSize - 1)];
         uint64_t currentData = entry.data.load(std::memory_order_relaxed);
@@ -1456,9 +1473,10 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
             int ttDepth = 0, dummyScore = 0; int16_t dummyPromo = 0; uint8_t ttFlag = 0, dummyAge = 0; uint16_t fromSq = 0, toSq = 0;
             unpackData(currentData, dummyScore, ttDepth, ttFlag, fromSq, toSq, dummyPromo, dummyAge);
             int reReadScore = scoreFromTT(dummyScore, ply);
-            if (ttDepth >= depth - 3 && (ttFlag == TT_EXACT || ttFlag == TT_BETA) && std::abs(reReadScore) < INF - 1000) {
-                int singularBeta = reReadScore - 2 * depth; // Singular margin = 2 * depth
-                int rDepth = depth - 3;
+            int ttDepthMargin = pvNode ? depth - 5 : depth - 3;
+            if (ttDepth >= ttDepthMargin && (ttFlag == TT_EXACT || ttFlag == TT_BETA) && std::abs(reReadScore) < INF - 1000) {
+                int singularBeta = reReadScore - (pvNode ? depth : 2 * depth);
+                int rDepth = (depth + 1) / 2;
 
                 // Search excluding the expected singular PV move
                 int rScore = negamax(board, rDepth, singularBeta - 1, singularBeta, ply, hash, tm, ctx, lastIrreversible, fiftyMove, ttMove);
@@ -1466,6 +1484,15 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
                 if (rScore < singularBeta) {
                     extension = 1; // Singular move confirmed! Extend 1 ply.
                     ctx.singularExtensionSuccess++;
+                } else if (rScore >= singularBeta && pvNode && depth >= 12 && ttFlag == TT_EXACT) {
+                    // Double extension: search with full window to verify
+                    int dblBeta = reReadScore - depth / 2;
+                    int dblScore = negamax(board, rDepth, dblBeta - 1, dblBeta, ply, hash, tm, ctx, lastIrreversible, fiftyMove, ttMove);
+                    if (tm.shouldStop()) return 0;
+                    if (dblScore < dblBeta) {
+                        extension = 2;
+                        ctx.singularExtensionSuccess++;
+                    }
                 }
             }
         }
@@ -1624,7 +1651,7 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
         int scoreValue;
         int nextDepth = depth - 1;
         if (m == ttMove && extension > 0) {
-            nextDepth++; // Apply Singular Extension to PV move search
+            nextDepth += extension; // Apply Singular Extension(s)
         }
 
         // Recapture extension: extend when a piece captures the piece that just moved
@@ -1632,6 +1659,12 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
             m.toSquare == ctx.searchPrevMove[ply].toSquare) {
             nextDepth++;
             ctx.recaptureExtensions++;
+        }
+
+        // Passed pawn extension: extend pushes of passed pawns
+        if (isPassedPawnMove && nextDepth < depth) {
+            nextDepth++;
+            ctx.passedPawnExtensions++;
         }
 
         if (movesSearched == 0) {
@@ -1650,14 +1683,20 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
                 }
             if (isQuiet) {
                 canReduce = !isPassedPawnMove && !isKiller;
-            } else if (isCapture && !givesCheck && seeScore < 0) {
-                canReduce = true; // Subject bad captures to LMR to pruning blunders quickly
+            } else if (isCapture && !givesCheck) {
+                canReduce = true; // All non-check captures are reducible
             }
 
-            if (nextDepth >= 3 && !inCheck && movesSearched >= 4 && canReduce) {
+            // Lower threshold for non-PV nodes (start LMR earlier)
+            int lmrThreshold = pvNode ? 3 : 1;
+            if (nextDepth >= 2 && !inCheck && movesSearched >= lmrThreshold && canReduce) {
+                // Base reduction: less for PV, more for non-PV
                 int dClamped = std::min(nextDepth, 127);
                 int mClamped = std::min(movesSearched, 255);
                 red = lmrTable[dClamped][mClamped];
+                if (pvNode) {
+                    red = std::max(0, red - 1);
+                }
                 ctx.lmrApplications++;
                 ctx.lmrReductionsSum += red;
                 if (red > ctx.lmrMaxReduction) ctx.lmrMaxReduction = red;
@@ -1669,10 +1708,6 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
                     } else {
                         red = std::max(0, red - 1);
                     }
-                }
-
-                if (pvNode) {
-                    red = std::max(0, red - 1);
                 }
 
                 if (isQuiet) {
@@ -1697,7 +1732,7 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
                     }
                     red -= hist / 10000; // Continuous dynamic scale factoring
                 } else {
-                    red += 1; // Extra reduction for bad captures
+                    red += 1; // Extra reduction for captures
                 }
 
                 red = std::max(0, std::min(red, nextDepth - 2));
@@ -1984,6 +2019,15 @@ void Lawliet::initTT() {
     zobristSide = rng();
     numThreads = std::max(1, options.threads);
     book.load(options.bookPath);
+}
+
+bool Lawliet::loadNNUE(const std::string& path) {
+    if (nnue.loadWeights(path)) {
+        std::cout << "info string NNUE weights loaded from: " << path << std::endl;
+        return true;
+    }
+    std::cout << "info string NNUE weights not found at: " << path << std::endl;
+    return false;
 }
 
 void Lawliet::setHashSize(int mb) {

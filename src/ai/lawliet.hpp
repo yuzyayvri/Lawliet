@@ -11,6 +11,7 @@
 #include <iostream>
 #include <thread>
 #include <atomic>
+#include "nnue.hpp"
 
 #pragma pack(push, 1)
 // Polyglot Opening Book Entry Layout
@@ -321,6 +322,7 @@ private:
     static int lmrTable[128][256];
 
     std::vector<TTEntry> transpositionTable;
+    NNUE nnue;
 
     uint64_t zobristPiece[64][12]{};
     uint64_t zobristCastle[16]{};
@@ -398,6 +400,8 @@ public:
     Move think(Board& board);
     Move think(Board& board, TimeManager& tm);
     int evaluateBoard(const Board& board, int alpha = -INF, int beta = INF, const SearchContext* ctx = nullptr) const;
+    bool loadNNUE(const std::string& path);
+    bool hasNNUE() const { return nnue.isLoaded(); }
     static std::string squareToUci(int sq);
 
     const EngineOptions& getOptions() const { return options; }
