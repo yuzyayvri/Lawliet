@@ -1533,7 +1533,7 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
     }
 
     // --- ProbCut (Probability Cutoff) ---
-    if (depth >= 5 && !inCheck && ply > 0 && std::abs(beta) < INF - 1000) {
+    if (depth >= 4 && !inCheck && ply > 0 && std::abs(beta) < INF - 1000) {
         ctx.probCutAttempts++;
         int rDepth = depth - 3;
         int probCutBeta = beta + 200; // Standard 200 cp margin
