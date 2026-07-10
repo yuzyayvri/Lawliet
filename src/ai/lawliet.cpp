@@ -261,10 +261,32 @@ int Lawliet::evaluateBoard(const Board& board, int alpha, int beta, const Search
         NNUE::extractFeatures(board.pieceBB, whiteFeat, wCount, blackFeat, bCount);
         int score = nnue.evaluate(whiteFeat, wCount, blackFeat, bCount);
         // NNUE returns score from white's perspective; adjust for side to move.
-        // No separate TempoBonus is added because the NNUE was trained on targets
-        // (Stockfish scores or HCE) that already encode the side-to-move advantage.
+        // The NNUE was trained on targets that include the side-to-move encoding
+        // already.  Add TempoBonus (+g_Params.TempoBonus) for consistency with
+        // the hand-crafted evaluation path, so that search heuristics (razoring,
+        // RFP, NMP, stand-pat, CorrHist update) see the same evaluation scale.
         int relativeScore = (board.turn == Board::WHITE) ? score : -score;
-        return relativeScore;
+
+        // Apply Static Evaluation Correction History (CorrHist) dynamically
+        // based on pawn hash, just like the HCE path does.
+        if (ctx) {
+            uint64_t pawnKey = 0;
+            uint64_t pk_w = board.pieceBB[0];
+            while (pk_w) {
+                pawnKey ^= zobristPiece[__builtin_ctzll(pk_w)][0];
+                pk_w &= pk_w - 1;
+            }
+            uint64_t pk_b = board.pieceBB[6];
+            while (pk_b) {
+                pawnKey ^= zobristPiece[__builtin_ctzll(pk_b)][6];
+                pk_b &= pk_b - 1;
+            }
+            int sideIdx = (board.turn == Board::WHITE) ? 0 : 1;
+            int correction = ctx->corrHist[sideIdx][pawnKey & 65535];
+            relativeScore += correction / 16;
+        }
+
+        return relativeScore + g_Params.TempoBonus;
     }
 
     int phase = 0;
