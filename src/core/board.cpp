@@ -10,7 +10,125 @@ uint64_t Board::knightAttacks[64];
 uint64_t Board::kingAttacks[64];
 uint64_t Board::pawnAttacks[2][64];
 uint64_t Board::rayMasks[64][8];
+uint64_t Board::bishopMagics[64];
+uint64_t Board::rookMagics[64];
+uint64_t Board::bishopMasks[64];
+uint64_t Board::rookMasks[64];
+int Board::bishopShift[64];
+int Board::rookShift[64];
+uint64_t Board::bishopAttacks[64][1 << 9];
+uint64_t Board::rookAttacks[64][1 << 12];
 bool Board::tablesInitialized = false;
+
+static uint64_t rng() {
+    static uint64_t s = 0x4A6B7C8D9E0F1A2BULL;
+    s ^= s >> 12;
+    s ^= s << 25;
+    s ^= s >> 27;
+    return s * 0x2545F4914F6CDD1DULL;
+}
+
+static uint64_t bishopAttacksBruteForce(int sq, uint64_t occ) {
+    uint64_t attacks = 0;
+    int r = sq / 8, f = sq % 8;
+    for (int nr = r - 1, nf = f + 1; nr >= 0 && nf < 8; nr--, nf++) {
+        uint64_t bit = 1ULL << (nr * 8 + nf); attacks |= bit; if (occ & bit) break;
+    }
+    for (int nr = r + 1, nf = f - 1; nr < 8 && nf >= 0; nr++, nf--) {
+        uint64_t bit = 1ULL << (nr * 8 + nf); attacks |= bit; if (occ & bit) break;
+    }
+    for (int nr = r - 1, nf = f - 1; nr >= 0 && nf >= 0; nr--, nf--) {
+        uint64_t bit = 1ULL << (nr * 8 + nf); attacks |= bit; if (occ & bit) break;
+    }
+    for (int nr = r + 1, nf = f + 1; nr < 8 && nf < 8; nr++, nf++) {
+        uint64_t bit = 1ULL << (nr * 8 + nf); attacks |= bit; if (occ & bit) break;
+    }
+    return attacks;
+}
+
+static uint64_t rookAttacksBruteForce(int sq, uint64_t occ) {
+    uint64_t attacks = 0;
+    int r = sq / 8, f = sq % 8;
+    for (int nr = r - 1; nr >= 0; nr--) {
+        uint64_t bit = 1ULL << (nr * 8 + f); attacks |= bit; if (occ & bit) break;
+    }
+    for (int nr = r + 1; nr < 8; nr++) {
+        uint64_t bit = 1ULL << (nr * 8 + f); attacks |= bit; if (occ & bit) break;
+    }
+    for (int nf = f - 1; nf >= 0; nf--) {
+        uint64_t bit = 1ULL << (r * 8 + nf); attacks |= bit; if (occ & bit) break;
+    }
+    for (int nf = f + 1; nf < 8; nf++) {
+        uint64_t bit = 1ULL << (r * 8 + nf); attacks |= bit; if (occ & bit) break;
+    }
+    return attacks;
+}
+
+static uint64_t computeMask(int sq, bool isBishop) {
+    uint64_t mask = 0;
+    int r = sq / 8, f = sq % 8;
+    if (isBishop) {
+        for (int nr = r - 1, nf = f + 1; nr > 0 && nf < 7; nr--, nf++) mask |= 1ULL << (nr * 8 + nf);
+        for (int nr = r + 1, nf = f - 1; nr < 7 && nf > 0; nr++, nf--) mask |= 1ULL << (nr * 8 + nf);
+        for (int nr = r - 1, nf = f - 1; nr > 0 && nf > 0; nr--, nf--) mask |= 1ULL << (nr * 8 + nf);
+        for (int nr = r + 1, nf = f + 1; nr < 7 && nf < 7; nr++, nf++) mask |= 1ULL << (nr * 8 + nf);
+    } else {
+        for (int nr = r - 1; nr > 0; nr--) mask |= 1ULL << (nr * 8 + f);
+        for (int nr = r + 1; nr < 7; nr++) mask |= 1ULL << (nr * 8 + f);
+        for (int nf = f - 1; nf > 0; nf--) mask |= 1ULL << (r * 8 + nf);
+        for (int nf = f + 1; nf < 7; nf++) mask |= 1ULL << (r * 8 + nf);
+    }
+    return mask;
+}
+
+static uint64_t findMagic(int sq, bool isBishop) {
+    uint64_t mask = computeMask(sq, isBishop);
+    int bits = __builtin_popcountll(mask);
+    int numOcc = 1 << bits;
+    uint64_t* attacks = new uint64_t[numOcc];
+    for (int i = 0; i < numOcc; i++) {
+        uint64_t occ = 0;
+        uint64_t m = mask;
+        int idx = i;
+        while (m) {
+            uint64_t bit = m & -m;
+            m ^= bit;
+            if (idx & 1) occ |= bit;
+            idx >>= 1;
+        }
+        attacks[i] = isBishop ? bishopAttacksBruteForce(sq, occ) : rookAttacksBruteForce(sq, occ);
+    }
+    uint64_t found = 0;
+    for (int trial = 0; trial < 1000000 && found == 0; trial++) {
+        uint64_t magic = rng() & rng() & rng();
+        if (magic == 0) continue;
+        bool ok = true;
+        uint64_t* table = new uint64_t[numOcc];
+        for (int j = 0; j < numOcc; j++) table[j] = 0xFFFFFFFFFFFFFFFFULL;
+        for (int i = 0; i < numOcc && ok; i++) {
+            uint64_t occ = 0;
+            uint64_t m = mask;
+            int idx = i;
+            while (m) {
+                uint64_t bit = m & -m;
+                m ^= bit;
+                if (idx & 1) occ |= bit;
+                idx >>= 1;
+            }
+            uint64_t index = (occ * magic) >> (64 - bits);
+            if (table[index] == 0xFFFFFFFFFFFFFFFFULL) table[index] = attacks[i];
+            else if (table[index] != attacks[i]) ok = false;
+        }
+        if (ok) found = magic;
+        delete[] table;
+    }
+    delete[] attacks;
+    if (found == 0) {
+        fprintf(stderr, "ERROR: Could not find magic for %s sq=%d mask=0x%lx bits=%d\n",
+                isBishop ? "bishop" : "rook", sq, mask, bits);
+    }
+    return found;
+}
 
 int Board::pawnTableMidgame[64] = {0};
 int Board::knightTableMidgame[64] = {0};
@@ -251,72 +369,51 @@ void Board::initAttackTables() {
         if (r < 7 && f > 0) pawnAttacks[1][sq] |= (bit << 7);
         if (r < 7 && f < 7) pawnAttacks[1][sq] |= (bit << 9);
     }
+
+    // Initialize magic bitboards
+    for (int sq = 0; sq < 64; sq++) {
+        bishopMasks[sq] = computeMask(sq, true);
+        bishopShift[sq] = 64 - __builtin_popcountll(bishopMasks[sq]);
+        bishopMagics[sq] = findMagic(sq, true);
+        for (int i = 0; i < (1 << (64 - bishopShift[sq])); i++) {
+            uint64_t occ = 0;
+            uint64_t m = bishopMasks[sq];
+            int idx = i;
+            while (m) {
+                uint64_t bit = m & -m;
+                m ^= bit;
+                if (idx & 1) occ |= bit;
+                idx >>= 1;
+            }
+            bishopAttacks[sq][(occ * bishopMagics[sq]) >> bishopShift[sq]] = bishopAttacksBruteForce(sq, occ);
+        }
+
+        rookMasks[sq] = computeMask(sq, false);
+        rookShift[sq] = 64 - __builtin_popcountll(rookMasks[sq]);
+        rookMagics[sq] = findMagic(sq, false);
+        for (int i = 0; i < (1 << (64 - rookShift[sq])); i++) {
+            uint64_t occ = 0;
+            uint64_t m = rookMasks[sq];
+            int idx = i;
+            while (m) {
+                uint64_t bit = m & -m;
+                m ^= bit;
+                if (idx & 1) occ |= bit;
+                idx >>= 1;
+            }
+            rookAttacks[sq][(occ * rookMagics[sq]) >> rookShift[sq]] = rookAttacksBruteForce(sq, occ);
+        }
+    }
 }
 
 uint64_t Board::getRookAttacks(int sq, uint64_t occ) {
-    uint64_t attacks = 0;
-    uint64_t ray = rayMasks[sq][0];
-    uint64_t blockers = ray & occ;
-    if (blockers) {
-        int blockerSq = 63 - __builtin_clzll(blockers);
-        attacks |= (ray & ~rayMasks[blockerSq][0]);
-    } else attacks |= ray;
-
-    ray = rayMasks[sq][1];
-    blockers = ray & occ;
-    if (blockers) {
-        int blockerSq = __builtin_ctzll(blockers);
-        attacks |= (ray & ~rayMasks[blockerSq][1]);
-    } else attacks |= ray;
-
-    ray = rayMasks[sq][2];
-    blockers = ray & occ;
-    if (blockers) {
-        int blockerSq = __builtin_ctzll(blockers);
-        attacks |= (ray & ~rayMasks[blockerSq][2]);
-    } else attacks |= ray;
-
-    ray = rayMasks[sq][3];
-    blockers = ray & occ;
-    if (blockers) {
-        int blockerSq = 63 - __builtin_clzll(blockers);
-        attacks |= (ray & ~rayMasks[blockerSq][3]);
-    } else attacks |= ray;
-
-    return attacks;
+    uint64_t masked = occ & rookMasks[sq];
+    return rookAttacks[sq][(masked * rookMagics[sq]) >> rookShift[sq]];
 }
 
 uint64_t Board::getBishopAttacks(int sq, uint64_t occ) {
-    uint64_t attacks = 0;
-    uint64_t ray = rayMasks[sq][4];
-    uint64_t blockers = ray & occ;
-    if (blockers) {
-        int blockerSq = 63 - __builtin_clzll(blockers);
-        attacks |= (ray & ~rayMasks[blockerSq][4]);
-    } else attacks |= ray;
-
-    ray = rayMasks[sq][5];
-    blockers = ray & occ;
-    if (blockers) {
-        int blockerSq = __builtin_ctzll(blockers);
-        attacks |= (ray & ~rayMasks[blockerSq][5]);
-    } else attacks |= ray;
-
-    ray = rayMasks[sq][6];
-    blockers = ray & occ;
-    if (blockers) {
-        int blockerSq = 63 - __builtin_clzll(blockers);
-        attacks |= (ray & ~rayMasks[blockerSq][6]);
-    } else attacks |= ray;
-
-    ray = rayMasks[sq][7];
-    blockers = occ & ray;
-    if (blockers) {
-        int blockerSq = __builtin_ctzll(blockers);
-        attacks |= (ray & ~rayMasks[blockerSq][7]);
-    } else attacks |= ray;
-
-    return attacks;
+    uint64_t masked = occ & bishopMasks[sq];
+    return bishopAttacks[sq][(masked * bishopMagics[sq]) >> bishopShift[sq]];
 }
 
 bool Board::isColorMatch(int square, int color) const {

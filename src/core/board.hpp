@@ -91,6 +91,15 @@ public:
     static uint64_t kingAttacks[64];
     static uint64_t pawnAttacks[2][64];
     static uint64_t rayMasks[64][8]; // Precomputed rays for sliding pieces
+    // Magic bitboard tables
+    static uint64_t bishopMagics[64];
+    static uint64_t rookMagics[64];
+    static uint64_t bishopMasks[64];
+    static uint64_t rookMasks[64];
+    static int bishopShift[64];
+    static int rookShift[64];
+    static uint64_t bishopAttacks[64][1 << 9]; // max 9 bits for bishops
+    static uint64_t rookAttacks[64][1 << 12];  // max 12 bits for rooks
     static bool tablesInitialized;
     static void initAttackTables();
     static uint64_t getRookAttacks(int sq, uint64_t occ);
