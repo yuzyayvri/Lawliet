@@ -333,12 +333,20 @@ int main(int argc, char* argv[]) {
             for (size_t i = 0; i < dataset.size(); ++i) {
                 board.loadFen(dataset[i].fen);
 
+                // Determine the evaluation from white's perspective.
+                // Stockfish's UCI score and Lawliet's evaluateBoard() both return
+                // from the side-to-move perspective, but NNUE outputs from white's
+                // perspective. For black-to-move positions we must flip the sign.
                 float target;
                 if (use_stockfish_scores) {
-                    target = static_cast<float>(stockfish_scores[i]);
+                    float rawScore = static_cast<float>(stockfish_scores[i]);
+                    target = (board.turn == Board::WHITE) ? rawScore : -rawScore;
                 } else {
                     int hceScore = engine.evaluateBoard(board);
-                    target = static_cast<float>(hceScore);
+                    // evaluateBoard returns from side-to-move perspective (+TempoBonus).
+                    // Remove TempoBonus and flip for black positions to get white's perspective.
+                    float whiteScore = static_cast<float>(hceScore) - g_Params.TempoBonus;
+                    target = (board.turn == Board::WHITE) ? whiteScore : -whiteScore;
                 }
 
                 float pred = engine.getNNUE().predict(board.pieceBB);
