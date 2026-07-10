@@ -1448,10 +1448,10 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
     if (staticEval > ctx.staticEvalMax) ctx.staticEvalMax = staticEval;
     if (staticEval < ctx.staticEvalMin) ctx.staticEvalMin = staticEval;
 
-    // Razoring (depth <= 2): skip full search when hopelessly below alpha
-    if (depth <= 2 && !inCheck && staticEval + 300 * depth < alpha) {
+    // Razoring (depth <= 1): skip full search when hopelessly below alpha
+    if (depth <= 1 && !inCheck && staticEval + 500 * depth < alpha) {
         ctx.razoringApplications++;
-        int margin = 300 * depth;
+        int margin = 500 * depth;
         int qScore = quiescence(board, alpha - margin, beta, ply, hash, tm, ctx);
         if (tm.shouldStop()) return 0;
         if (qScore < alpha - margin) return qScore;
