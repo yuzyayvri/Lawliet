@@ -17,10 +17,10 @@ constexpr int NNUE_L1_SIZE      = 32;
 constexpr int NNUE_L2_SIZE      = 32;
 constexpr int NNUE_L3_SIZE      = 1;
 
-constexpr int NNUE_SCALE    = 400;
-constexpr int NNUE_FV_SCALE = 16;    // Output scaling factor (Stockfish v2 protocol)
-constexpr int NNUE_QA       = 255;   // FT quantization (CReLU max)
-constexpr int NNUE_QB       = 64;    // Hidden layer quantization (CReLU max)
+// Stockfish 13 NNUE constants (from source):
+constexpr int NNUE_FT_OUTPUT_MAX     = 127;  // FT CReLU: clamp(x, 0, 127)
+constexpr int NNUE_WEIGHT_SCALE_BITS = 6;    // Hidden CReLU: x >> 6  (= divide by 64)
+constexpr int NNUE_FV_SCALE          = 16;   // Output scaling: raw / FV_SCALE
 
 class NNUE {
 public:
@@ -31,8 +31,11 @@ public:
     bool isLoaded() const { return weights_loaded_; }
 
     // Evaluate position (returns centipawn score from side-to-move perspective)
+    // Stockfish 13 outputs: [side_to_move_accumulator, ~side_to_move_accumulator]
+    // whiteToMove controls which perspective goes first.
     int evaluate(const uint32_t* whiteFeatures, int wCount,
-                 const uint32_t* blackFeatures, int bCount) const;
+                 const uint32_t* blackFeatures, int bCount,
+                 bool whiteToMove) const;
 
     // Extract HalfKP Friend feature indices from piece bitboards
     static void extractFeatures(const uint64_t* pieceBB,
@@ -57,14 +60,14 @@ private:
         return kingSq * 641 + pType * 64 + pSq;
     }
 
-    // Clipped ReLU for Feature Transformer: clamp(x / QA) to [0, QA]
-    static int crelu(int x) { return std::max(0, std::min(NNUE_QA, x / NNUE_QA)); }
+    // FT CReLU (no division): clamp(x, 0, NNUE_FT_OUTPUT_MAX)
+    static int creluFT(int x) { return std::max(0, std::min(NNUE_FT_OUTPUT_MAX, x)); }
 
-    // Clipped ReLU for hidden layers: clamp(x / QB) to [0, QB]
-    static int creluHidden(int x) { return std::max(0, std::min(NNUE_QB, x / NNUE_QB)); }
+    // Hidden layer CReLU: clamp(x >> NNUE_WEIGHT_SCALE_BITS, 0, NNUE_FT_OUTPUT_MAX)
+    static int creluHidden(int x) { return std::max(0, std::min(NNUE_FT_OUTPUT_MAX, x >> NNUE_WEIGHT_SCALE_BITS)); }
 
-    // Forward pass through the network given a saturated 512-element accumulator
-    int forward(const int16_t* values) const;
+    // Forward pass through the network given a [0..127]-clamped 512-element accumulator
+    int forward(const uint8_t* values) const;
 };
 
 // Aligned allocation helpers (file-local, shared across nnue.cpp)

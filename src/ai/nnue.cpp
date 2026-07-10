@@ -109,8 +109,8 @@ void NNUE::extractFeatures(const uint64_t* pieceBB,
     blackFeat[bCount++] = bKing * 641 + 640;
 }
 
-int NNUE::forward(const int16_t* values) const {
-    // Hidden Layer 1: 512 -> 32 (ClippedReLU with QB=64)
+int NNUE::forward(const uint8_t* values) const {
+    // Hidden Layer 1: 512 -> 32 (ClippedReLU: x >> 6, clamp to [0,127])
     int32_t l1[NNUE_L1_SIZE];
     for (int i = 0; i < NNUE_L1_SIZE; ++i) {
         int32_t sum = l1_biases_[i];
@@ -119,7 +119,7 @@ int NNUE::forward(const int16_t* values) const {
         l1[i] = creluHidden(sum);
     }
 
-    // Hidden Layer 2: 32 -> 32 (ClippedReLU with QB=64)
+    // Hidden Layer 2: 32 -> 32 (ClippedReLU: x >> 6, clamp to [0,127])
     int32_t l2[NNUE_L2_SIZE];
     for (int i = 0; i < NNUE_L2_SIZE; ++i) {
         int32_t sum = l2_biases_[i];
@@ -128,17 +128,18 @@ int NNUE::forward(const int16_t* values) const {
         l2[i] = creluHidden(sum);
     }
 
-    // Output: 32 -> 1
+    // Output: 32 -> 1 (linear, no activation)
     int32_t out = l3_biases_[0];
     for (int j = 0; j < NNUE_L2_SIZE; ++j)
         out += l2[j] * (int32_t)l3_weights_[j];
 
-    // Scale to centipawns: includes FV_SCALE factor for the v2 NNUE protocol
-    return out * NNUE_SCALE / (NNUE_FV_SCALE * NNUE_QA * NNUE_QB);
+    // Scale to centipawns (Stockfish 13): raw / FV_SCALE
+    return out / NNUE_FV_SCALE;
 }
 
 int NNUE::evaluate(const uint32_t* whiteFeat, int wCount,
-                   const uint32_t* blackFeat, int bCount) const {
+                   const uint32_t* blackFeat, int bCount,
+                   bool whiteToMove) const {
     if (!weights_loaded_) return 0;
 
     // Build two separate [256] accumulators, one for each king perspective,
@@ -167,14 +168,17 @@ int NNUE::evaluate(const uint32_t* whiteFeat, int wCount,
             accBlack[j] += (int32_t)col[j];
     }
 
-    // Saturate to int16 range and interleave into the [512] forward input.
-    // The network expects: [white_0..white_255, black_0..black_255]
-    int16_t combined[NNUE_FT_TOTAL];
+    // Stockfish 13 orders perspectives: [side_to_move, ~side_to_move]
+    // whiteToMove: first 256 = white accumulator, last 256 = black accumulator
+    // blackToMove: first 256 = black accumulator, last 256 = white accumulator
+    const int32_t* first  = whiteToMove ? accWhite : accBlack;
+    const int32_t* second = whiteToMove ? accBlack : accWhite;
+
+    // Clamp to uint8 [0..127] range (Stockfish 13 FT CReLU) and interleave
+    uint8_t combined[NNUE_FT_TOTAL];
     for (int j = 0; j < NNUE_FT_OUTPUTS; ++j) {
-        int32_t wv = accWhite[j];
-        int32_t bv = accBlack[j];
-        combined[j]                      = (int16_t)std::max(-32768, std::min(32767, wv));
-        combined[j + NNUE_FT_OUTPUTS]    = (int16_t)std::max(-32768, std::min(32767, bv));
+        combined[j]                      = (uint8_t)creluFT(first[j]);
+        combined[j + NNUE_FT_OUTPUTS]    = (uint8_t)creluFT(second[j]);
     }
 
     return forward(combined);

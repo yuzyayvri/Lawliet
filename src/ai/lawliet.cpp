@@ -261,7 +261,7 @@ int Lawliet::evaluateBoard(const Board& board, int alpha, int beta, const Search
         uint32_t whiteFeat[256], blackFeat[256];
         int wCount = 0, bCount = 0;
         NNUE::extractFeatures(board.pieceBB, whiteFeat, wCount, blackFeat, bCount);
-        int score = nnue.evaluate(whiteFeat, wCount, blackFeat, bCount);
+        int score = nnue.evaluate(whiteFeat, wCount, blackFeat, bCount, board.turn == Board::WHITE);
         // NNUE returns score from white's perspective; adjust for side to move.
         // The NNUE was trained on targets that include the side-to-move encoding
         // already.  Add TempoBonus (+g_Params.TempoBonus) for consistency with
