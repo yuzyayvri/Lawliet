@@ -166,35 +166,35 @@ int NNUE::evaluate(const uint32_t* whiteFeat, int wCount,
 
     // Build two separate [256] accumulators, one for each king perspective,
     // then concatenate into a single [512] array for the hidden layer.
-    int32_t accWhite[NNUE_FT_OUTPUTS];
-    int32_t accBlack[NNUE_FT_OUTPUTS];
+    // MUST use int16_t to match Stockfish 13's SIMD _mm256_add_epi16 wraparound.
+    int16_t accWhite[NNUE_FT_OUTPUTS];
+    int16_t accBlack[NNUE_FT_OUTPUTS];
 
     // Start from the shared FT biases
     for (int j = 0; j < NNUE_FT_OUTPUTS; ++j) {
-        int32_t b = (int32_t)ft_biases_[j];
-        accWhite[j] = b;
-        accBlack[j] = b;
+        accWhite[j] = ft_biases_[j];
+        accBlack[j] = ft_biases_[j];
     }
 
-    // Accumulate white perspective features
+    // Accumulate white perspective features (int16_t addition wraps like SIMD)
     for (int i = 0; i < wCount; ++i) {
         const int16_t* col = &ft_weights_[whiteFeat[i] * (size_t)NNUE_FT_OUTPUTS];
         for (int j = 0; j < NNUE_FT_OUTPUTS; ++j)
-            accWhite[j] += (int32_t)col[j];
+            accWhite[j] += col[j];
     }
 
-    // Accumulate black perspective features
+    // Accumulate black perspective features (int16_t addition wraps like SIMD)
     for (int i = 0; i < bCount; ++i) {
         const int16_t* col = &ft_weights_[blackFeat[i] * (size_t)NNUE_FT_OUTPUTS];
         for (int j = 0; j < NNUE_FT_OUTPUTS; ++j)
-            accBlack[j] += (int32_t)col[j];
+            accBlack[j] += col[j];
     }
 
     // Stockfish 13 orders perspectives: [side_to_move, ~side_to_move]
     // whiteToMove: first 256 = white accumulator, last 256 = black accumulator
     // blackToMove: first 256 = black accumulator, last 256 = white accumulator
-    const int32_t* first  = whiteToMove ? accWhite : accBlack;
-    const int32_t* second = whiteToMove ? accBlack : accWhite;
+    const int16_t* first  = whiteToMove ? accWhite : accBlack;
+    const int16_t* second = whiteToMove ? accBlack : accWhite;
 
     // Clamp to uint8 [0..127] range (Stockfish 13 FT CReLU) and interleave
     uint8_t combined[NNUE_FT_TOTAL];

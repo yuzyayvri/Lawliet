@@ -255,7 +255,7 @@ int Lawliet::see(const Board& board, int from, int to, SearchContext& ctx) const
 // ============================================================================
 // DYNAMIC TAPERED EVALUATION ENGINE
 // ============================================================================
-int Lawliet::evaluateBoard(const Board& board, int alpha, int beta, const SearchContext* ctx) const {
+    int Lawliet::evaluateBoard(const Board& board, int alpha, int beta, const SearchContext* ctx) const {
     // NNUE evaluation path
     if (nnue.isLoaded()) {
         uint32_t whiteFeat[256], blackFeat[256];
@@ -284,7 +284,7 @@ int Lawliet::evaluateBoard(const Board& board, int alpha, int beta, const Search
             relativeScore += correction / 16;
         }
 
-        return relativeScore;
+        return relativeScore + g_Params.TempoBonus;
     }
 
     int phase = 0;
