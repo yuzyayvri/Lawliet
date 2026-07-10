@@ -1463,7 +1463,7 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
     // Singular Extension Logic: apply at any ply to strengthen tactical search
     // Use ply-dependent depth requirement: easier at root, harder deeper in tree
     int extension = 0;
-    int seDepthReq = (ply <= 1) ? 8 : 7;
+    int seDepthReq = (ply <= 1) ? 5 : 8;  // Easier near root, harder deeper
     if (depth >= seDepthReq && hasTT && ttMove.fromSquare != -1 && !inCheck && excludedMove.fromSquare == excludedMove.toSquare && std::abs(beta) < INF - 1000) {
         ctx.singularExtensionAttempts++;
         TTEntry& entry = transpositionTable[hash & (ttSize - 1)];
