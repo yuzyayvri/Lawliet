@@ -1284,14 +1284,37 @@ int Lawliet::quiescence(Board& board, int alpha, int beta, int ply, uint64_t has
         generateCaptures(board, board.turn, ctx.moveBuffers[ply], ctx.moveCounts[ply]);
     }
 
-    const Move noMove{};
-    orderMoves(ctx.moveBuffers[ply], ctx.moveScores[ply], ctx.moveCounts[ply], board, ply, noMove, ctx);
+    // Fast MVV-LVA ordering for quiescence (avoids expensive SEE calls during sort)
+    for (int i = 0; i < ctx.moveCounts[ply]; ++i) {
+        const Move& m = ctx.moveBuffers[ply][i];
+        int v = 0;
+        if (m.promotionPiece != 0) {
+            v = 15000000;
+        } else if (m.pieceCaptured != 0 || m.wasEnPassant) {
+            int victim = m.wasEnPassant ? 0 : (std::abs(m.pieceCaptured) - 1);
+            int attacker = std::abs(m.pieceMoved) - 1;
+            v = 10000000 + victim * 10 - attacker;
+        }
+        ctx.moveScores[ply][i] = v;
+    }
+    struct { Move m; int s; } qsTemp[256];
+    for (int i = 0; i < ctx.moveCounts[ply]; ++i) { qsTemp[i] = {ctx.moveBuffers[ply][i], ctx.moveScores[ply][i]}; }
+    std::sort(qsTemp, qsTemp + ctx.moveCounts[ply], [](const auto& a, const auto& b) { return a.s > b.s; });
+    for (int i = 0; i < ctx.moveCounts[ply]; ++i) { ctx.moveBuffers[ply][i] = qsTemp[i].m; ctx.moveScores[ply][i] = qsTemp[i].s; }
 
     int legalMovesSearched = 0;
 
     for (int i = 0; i < ctx.moveCounts[ply]; ++i) {
         if (tm.shouldStop()) return 0;
         Move m = ctx.moveBuffers[ply][i];
+
+        // Pre-compute SEE for capture pruning (must be done before doMove on the original board)
+        int seeScore = 0;
+        bool haveSee = false;
+        if (!inCheck && m.pieceCaptured != 0 && m.promotionPiece == 0) {
+            seeScore = see(board, m.fromSquare, m.toSquare, ctx);
+            haveSee = true;
+        }
 
         doMove(board, m, hash, ctx);
 
@@ -1305,7 +1328,7 @@ int Lawliet::quiescence(Board& board, int alpha, int beta, int ply, uint64_t has
         bool givesCheck = board.isInCheck(board.turn);
 
         // Delta pruning: skip captures that can't realistically raise alpha
-        if (!inCheck && !givesCheck && m.pieceCaptured != 0 && m.promotionPiece == 0) {
+        if (!inCheck && !givesCheck && haveSee) {
             int victimType = std::abs(m.pieceCaptured) - 1;
             if (staticEval + Board::pieceValuesMidgame[victimType] + 200 <= alpha) {
                 undoMove(board, m, hash, ctx);
@@ -1313,8 +1336,8 @@ int Lawliet::quiescence(Board& board, int alpha, int beta, int ply, uint64_t has
             }
         }
 
-        // Prune bad captures (SEE < 0) that don't give check; never prune promotions or checks
-        if (!inCheck && ctx.moveScores[ply][i] < 10000000 && !givesCheck) {
+        // SEE-based bad capture pruning (loser exchanges are rarely worth searching)
+        if (!inCheck && !givesCheck && haveSee && seeScore < 0) {
             undoMove(board, m, hash, ctx);
             continue;
         }
