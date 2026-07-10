@@ -141,8 +141,24 @@ int NNUE::evaluate(const uint32_t* whiteFeat, int wCount,
                    const uint32_t* blackFeat, int bCount) const {
     if (!weights_loaded_) return 0;
 
+    // Combine both king perspectives into a single accumulator.
+    // The HalfKP index encodes the king square: (kingSq*10 + pType)*64 + pSq.
+    // Since wKing != bKing, white and black features index into disjoint regions
+    // of the weight matrix. Starting from biases, we accumulate BOTH perspectives.
     NNUEAccumulator acc;
-    refreshAccumulator(acc, whiteFeat, wCount);
+    std::memcpy(acc.values, ft_biases_, NNUE_FT_OUTPUTS * sizeof(int16_t));
+
+    for (int i = 0; i < wCount; ++i) {
+        const int16_t* col = &ft_weights_[whiteFeat[i] * (size_t)NNUE_FT_OUTPUTS];
+        for (int j = 0; j < NNUE_FT_OUTPUTS; ++j)
+            acc.values[j] += col[j];
+    }
+    for (int i = 0; i < bCount; ++i) {
+        const int16_t* col = &ft_weights_[blackFeat[i] * (size_t)NNUE_FT_OUTPUTS];
+        for (int j = 0; j < NNUE_FT_OUTPUTS; ++j)
+            acc.values[j] += col[j];
+    }
+
     return forward(acc);
 }
 
@@ -157,6 +173,11 @@ float NNUE::predict(const uint64_t* pieceBB) const {
     std::memcpy(ft, ft_biases_f_, NNUE_FT_OUTPUTS * sizeof(float));
     for (int i = 0; i < wc; ++i) {
         const float* col = &ft_weights_f_[whiteFeat[i] * (size_t)NNUE_FT_OUTPUTS];
+        for (int j = 0; j < NNUE_FT_OUTPUTS; ++j)
+            ft[j] += col[j];
+    }
+    for (int i = 0; i < bc; ++i) {
+        const float* col = &ft_weights_f_[blackFeat[i] * (size_t)NNUE_FT_OUTPUTS];
         for (int j = 0; j < NNUE_FT_OUTPUTS; ++j)
             ft[j] += col[j];
     }
@@ -306,10 +327,15 @@ void NNUE::trainStep(const uint64_t* pieceBB, float targetScore, float lr) {
     NNUE::extractFeatures(pieceBB, whiteFeat, wc, blackFeat, bc);
 
     // Forward pass (float version mirroring the quantized forward)
-    // Feature transformer
+    // Feature transformer: accumulate both white and black king perspectives
     std::memcpy(scratch_ft_, ft_biases_f_, NNUE_FT_OUTPUTS * sizeof(float));
     for (int i = 0; i < wc; ++i) {
         const float* col = &ft_weights_f_[whiteFeat[i] * (size_t)NNUE_FT_OUTPUTS];
+        for (int j = 0; j < NNUE_FT_OUTPUTS; ++j)
+            scratch_ft_[j] += col[j];
+    }
+    for (int i = 0; i < bc; ++i) {
+        const float* col = &ft_weights_f_[blackFeat[i] * (size_t)NNUE_FT_OUTPUTS];
         for (int j = 0; j < NNUE_FT_OUTPUTS; ++j)
             scratch_ft_[j] += col[j];
     }
@@ -418,9 +444,17 @@ void NNUE::trainStep(const uint64_t* pieceBB, float targetScore, float lr) {
         param -= lr * m_hat / (std::sqrt(v_hat) + eps);
     };
 
-    // Update feature transformer weights (only active features)
+    // Update feature transformer weights for both perspectives
     for (int i = 0; i < wc; ++i) {
         size_t col_idx = whiteFeat[i] * (size_t)NNUE_FT_OUTPUTS;
+        float* col = &ft_weights_f_[col_idx];
+        float* col_m = &ft_m_[col_idx];
+        float* col_v = &ft_v_[col_idx];
+        for (int j = 0; j < NNUE_FT_OUTPUTS; ++j)
+            adam_update(col[j], col_m[j], col_v[j], d_ft[j]);
+    }
+    for (int i = 0; i < bc; ++i) {
+        size_t col_idx = blackFeat[i] * (size_t)NNUE_FT_OUTPUTS;
         float* col = &ft_weights_f_[col_idx];
         float* col_m = &ft_m_[col_idx];
         float* col_v = &ft_v_[col_idx];
