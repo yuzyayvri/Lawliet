@@ -232,8 +232,8 @@ int main(int argc, char* argv[]) {
     bool nnue_mode = false;
     std::string filename = "zurichess_quiet.epd";
     std::string nnue_out = "nnue.bin";
-    int nnue_epochs = 10;
-    float nnue_lr = 0.001f;
+    int nnue_epochs = 30;
+    float nnue_lr = 0.01f;
     size_t nnue_max_pos = 0;
     std::string stockfish_data_file = "";
 
@@ -337,9 +337,14 @@ int main(int argc, char* argv[]) {
                 // Stockfish's UCI score and Lawliet's evaluateBoard() both return
                 // from the side-to-move perspective, but NNUE outputs from white's
                 // perspective. For black-to-move positions we must flip the sign.
+                //
+                // Clamp Stockfish mate scores to [-10000, 10000] so that mate
+                // annotations (e.g. 99993 for mate-in-7) do not blow up the MSE
+                // and produce unusable NNUE weights.
                 float target;
                 if (use_stockfish_scores) {
                     float rawScore = static_cast<float>(stockfish_scores[i]);
+                    rawScore = std::max(-10000.0f, std::min(10000.0f, rawScore));
                     target = (board.turn == Board::WHITE) ? rawScore : -rawScore;
                 } else {
                     int hceScore = engine.evaluateBoard(board);
