@@ -1407,7 +1407,14 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
         if (totalPieces == 4) {
             int wBishops = __builtin_popcountll(board.pieceBB[2]);
             int bBishops = __builtin_popcountll(board.pieceBB[8]);
-            if (wBishops == 1 && bBishops == 1 && (board.pieceBB[3] | board.pieceBB[9] | board.pieceBB[4] | board.pieceBB[10]) == 0)
+            int wKnights = __builtin_popcountll(board.pieceBB[1]);
+            int bKnights = __builtin_popcountll(board.pieceBB[7]);
+            bool noMajors = (board.pieceBB[3] | board.pieceBB[9] | board.pieceBB[4] | board.pieceBB[10]) == 0;
+            // K+B vs K+B (no rooks or queens)
+            if (wBishops == 1 && bBishops == 1 && noMajors)
+                return 0;
+            // K+N vs K+N (no rooks, queens, or bishops)
+            if (wKnights == 1 && bKnights == 1 && wBishops == 0 && bBishops == 0 && noMajors)
                 return 0;
         }
     }
