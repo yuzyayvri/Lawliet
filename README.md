@@ -30,7 +30,7 @@ make texel_tuner
 Go to the `build` directory in your terminal. After making the executable, you can use `./chess_app` to launch the mini chess sandbox, and `./chess_app --uci` to launch Lawliet with UCI. Alternatively, if you have a GUI, point it towards the `chess_app` executable. Read your specific GUI's documentation if necessary.
 
 ## Thanks to
-The GOAT, [Stockfish](https://github.com/official-stockfish/Stockfish), for heavy inspiration
+The GOAT, [Stockfish](https://github.com/official-stockfish/Stockfish), for heavy inspiration, and NNUE. My god, implementing NNUE was hell
 
 ## License
 Lawliet is under the GNU General Public License (GPL v3).
