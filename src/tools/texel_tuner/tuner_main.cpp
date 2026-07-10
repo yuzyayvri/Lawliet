@@ -326,11 +326,20 @@ int main(int argc, char* argv[]) {
         std::cout << "Training buffers allocated." << std::endl;
 
         Board board;
+        std::vector<size_t> epoch_order(dataset.size());
+        for (size_t i = 0; i < dataset.size(); ++i) epoch_order[i] = i;
+        std::mt19937 epoch_rng(42);
+
         for (int epoch = 1; epoch <= nnue_epochs; ++epoch) {
             float lr = nnue_lr;
             double total_mse = 0.0;
 
-            for (size_t i = 0; i < dataset.size(); ++i) {
+            // Shuffle the dataset order each epoch so that gradient noise is
+            // isotropic, helping Adam converge faster and to better minima.
+            std::shuffle(epoch_order.begin(), epoch_order.end(), epoch_rng);
+
+            for (size_t idx = 0; idx < dataset.size(); ++idx) {
+                size_t i = epoch_order[idx];
                 board.loadFen(dataset[i].fen);
 
                 // Determine the evaluation from white's perspective.
