@@ -113,8 +113,8 @@ struct SearchContext {
     // Continuation History Heuristic: quiet history based on the previous piece's movement
     int continuationHistory[12][64]{};
 
-    // Static Evaluation Correction History (CorrHist)
-    int corrHist[2][16384]{};
+    // Static Evaluation Correction History (CorrHist) - 16-bit index for finer granularity
+    int corrHist[2][65536]{};
 
     // Bounded Repetition Detection Hash Stack
     uint64_t hashStack[4096]{};

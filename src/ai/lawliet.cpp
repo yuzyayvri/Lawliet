@@ -276,7 +276,7 @@ int Lawliet::evaluateBoard(const Board& board, int alpha, int beta, const Search
             bp &= bp - 1;
         }
         int sideIdx = (board.turn == Board::WHITE) ? 0 : 1;
-        int correction = ctx->corrHist[sideIdx][pawnKey & 16383];
+        int correction = ctx->corrHist[sideIdx][pawnKey & 65535];
         if (board.turn == Board::WHITE) {
             mgScore += correction / 16;
             egScore += correction / 16;
@@ -1855,7 +1855,7 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
         }
 
         int sideIdx = (board.turn == Board::WHITE) ? 0 : 1;
-        int& entry = ctx.corrHist[sideIdx][pKey & 16383];
+        int& entry = ctx.corrHist[sideIdx][pKey & 65535];
         int weight = std::min(128, originalDepth * originalDepth);
         entry = (entry * (1024 - weight) + diff * weight) / 1024;
         entry = std::clamp(entry, -8192, 8192);
