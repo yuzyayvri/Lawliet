@@ -56,15 +56,15 @@ bool NNUE::loadWeights(const std::string& filename) {
         file.read(static_cast<char*>(buf), sz);
     };
 
-    // Stockfish 13 file format: FT biases stored BEFORE FT weights
+    // Stockfish 13 file format: all layers store biases BEFORE weights
     read(ft_biases_,  NNUE_FT_OUTPUTS * sizeof(int16_t));
     read(ft_weights_, NNUE_FT_INPUTS * (size_t)NNUE_FT_OUTPUTS * sizeof(int16_t));
-    read(l1_weights_, (size_t)NNUE_L1_SIZE * NNUE_FT_TOTAL * sizeof(int8_t));
     read(l1_biases_,  NNUE_L1_SIZE * sizeof(int32_t));
-    read(l2_weights_, (size_t)NNUE_L2_SIZE * NNUE_L1_SIZE * sizeof(int8_t));
+    read(l1_weights_, (size_t)NNUE_L1_SIZE * NNUE_FT_TOTAL * sizeof(int8_t));
     read(l2_biases_,  NNUE_L2_SIZE * sizeof(int32_t));
-    read(l3_weights_, (size_t)NNUE_L3_SIZE * NNUE_L2_SIZE * sizeof(int8_t));
+    read(l2_weights_, (size_t)NNUE_L2_SIZE * NNUE_L1_SIZE * sizeof(int8_t));
     read(l3_biases_,  NNUE_L3_SIZE * sizeof(int32_t));
+    read(l3_weights_, (size_t)NNUE_L3_SIZE * NNUE_L2_SIZE * sizeof(int8_t));
 
     weights_loaded_ = true;
     return true;
