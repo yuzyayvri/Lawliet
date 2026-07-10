@@ -118,7 +118,7 @@ int NNUE::forward(const int16_t* values) const {
         int32_t sum = l1_biases_[i];
         for (int j = 0; j < NNUE_FT_OUTPUTS; ++j)
             sum += (int32_t)values[j] * (int32_t)l1_weights_[i * NNUE_FT_OUTPUTS + j];
-        l1[i] = clip(sum / NNUE_QB);
+        l1[i] = crelu(sum);
     }
 
     // Hidden Layer 2: 32 -> 32
@@ -127,7 +127,7 @@ int NNUE::forward(const int16_t* values) const {
         int32_t sum = l2_biases_[i];
         for (int j = 0; j < NNUE_L1_SIZE; ++j)
             sum += l1[j] * (int32_t)l2_weights_[i * NNUE_L1_SIZE + j];
-        l2[i] = clip(sum / NNUE_QB);
+        l2[i] = crelu(sum);
     }
 
     // Output: 32 -> 1
@@ -199,7 +199,7 @@ float NNUE::predict(const uint64_t* pieceBB) const {
         float sum = l1_biases_f_[i];
         for (int j = 0; j < NNUE_FT_OUTPUTS; ++j)
             sum += ft[j] * l1_weights_f_[i * NNUE_FT_OUTPUTS + j];
-        l1[i] = std::max(0.0f, std::min(127.0f, sum / NNUE_QB));
+        l1[i] = std::max(0.0f, std::min((float)NNUE_QA, sum / NNUE_QA));
     }
 
     float l2[NNUE_L2_SIZE];
@@ -207,7 +207,7 @@ float NNUE::predict(const uint64_t* pieceBB) const {
         float sum = l2_biases_f_[i];
         for (int j = 0; j < NNUE_L1_SIZE; ++j)
             sum += l1[j] * l2_weights_f_[i * NNUE_L1_SIZE + j];
-        l2[i] = std::max(0.0f, std::min(127.0f, sum / NNUE_QB));
+        l2[i] = std::max(0.0f, std::min((float)NNUE_QA, sum / NNUE_QA));
     }
 
     float out = l3_biases_f_[0];
@@ -255,18 +255,15 @@ bool NNUE::trainInit() {
             l3_weights_f_[i] = (float)l3_weights_[i];
         l3_biases_f_[0] = (float)l3_biases_[0];
     } else {
-        // Properly scaled initialization for CRELU network.
-        // Xavier init is designed for tanh/sigmoid and produces vanishingly
-        // small signal through the Clip[0,127] activation with QB=64.
-        // Instead, we scale weights so that each layer's pre-CRELU activation
-        // varies by approximately 32*QB = 2048 around the bias center.
-        // This ensures l1/l2 activations span roughly [32, 96] range,
-        // producing meaningful output variation from the start.
+        // Properly scaled initialization for CRELU network with QA quantization.
+        // We scale weights so that each layer's pre-CRELU activation varies
+        // by approximately NNUE_QA * 64 = 16320 around the bias center.
+        // This ensures l1/l2 activations span roughly [64, 192] range.
         const float ft_scale = 1.26f;    // Uniform[-1.26, 1.26]: ft[j] std ~ 4.0 after 30 features
-        const float l1_scale = 55.4f;    // Uniform[-55.4, 55.4]: l1 pre varying by ~2048
-        const float l2_scale = 19.6f;    // Uniform[-19.6, 19.6]: l2 pre varying by ~2048
-        const float l3_scale = 19.6f;    // Uniform[-19.6, 19.6]: output std ~ 174 cp
-        const float bias_init = NNUE_QB * 64.0f;  // 4096 -> CRELU midpoint of 64
+        const float l1_scale = 220.6f;   // Uniform[-220.6, 220.6]: l1 pre varying by ~16320
+        const float l2_scale = 78.0f;    // Uniform[-78.0, 78.0]: l2 pre varying by ~16320
+        const float l3_scale = 78.0f;    // Uniform[-78.0, 78.0]: output std ~ 276 cp
+        const float bias_init = NNUE_QA * 64.0f;  // 16320 -> CRELU midpoint of 64
 
         uint64_t seed = 42;
         auto rnd = [&]() -> float {
@@ -357,7 +354,7 @@ void NNUE::trainStep(const uint64_t* pieceBB, float targetScore, float lr) {
         float sum = l1_biases_f_[i];
         for (int j = 0; j < NNUE_FT_OUTPUTS; ++j)
             sum += scratch_ft_[j] * l1_weights_f_[i * NNUE_FT_OUTPUTS + j];
-        scratch_l1_[i] = std::max(0.0f, std::min(127.0f, sum / NNUE_QB));
+        scratch_l1_[i] = std::max(0.0f, std::min((float)NNUE_QA, sum / NNUE_QA));
     }
 
     // Layer 2: 32 -> 32
@@ -365,7 +362,7 @@ void NNUE::trainStep(const uint64_t* pieceBB, float targetScore, float lr) {
         float sum = l2_biases_f_[i];
         for (int j = 0; j < NNUE_L1_SIZE; ++j)
             sum += scratch_l1_[j] * l2_weights_f_[i * NNUE_L1_SIZE + j];
-        scratch_l2_[i] = std::max(0.0f, std::min(127.0f, sum / NNUE_QB));
+        scratch_l2_[i] = std::max(0.0f, std::min((float)NNUE_QA, sum / NNUE_QA));
     }
 
     // Output
@@ -394,14 +391,14 @@ void NNUE::trainStep(const uint64_t* pieceBB, float targetScore, float lr) {
     // Layer 2 backward (before CRELU)
     float d_l2_raw[NNUE_L2_SIZE];
     for (int j = 0; j < NNUE_L2_SIZE; ++j) {
-        d_l2_raw[j] = d_score * l3_weights_f_[j] / NNUE_QB;
+        d_l2_raw[j] = d_score * l3_weights_f_[j] / NNUE_QA;
     }
 
     // Apply CRELU backward
     float d_l2[NNUE_L2_SIZE];
     float d_l2_bias[NNUE_L2_SIZE];
     for (int j = 0; j < NNUE_L2_SIZE; ++j) {
-        float g = (scratch_l2_[j] > 0.0f && scratch_l2_[j] < 127.0f) ? d_l2_raw[j] : 0.0f;
+        float g = (scratch_l2_[j] > 0.0f && scratch_l2_[j] < NNUE_QA) ? d_l2_raw[j] : 0.0f;
         d_l2[j] = g;
         d_l2_bias[j] = g;
     }
@@ -423,8 +420,8 @@ void NNUE::trainStep(const uint64_t* pieceBB, float targetScore, float lr) {
     float d_l1[NNUE_L1_SIZE];
     float d_l1_bias[NNUE_L1_SIZE];
     for (int j = 0; j < NNUE_L1_SIZE; ++j) {
-        float g = d_l1_raw[j] / NNUE_QB;
-        g = (scratch_l1_[j] > 0.0f && scratch_l1_[j] < 127.0f) ? g : 0.0f;
+        float g = d_l1_raw[j] / NNUE_QA;
+        g = (scratch_l1_[j] > 0.0f && scratch_l1_[j] < NNUE_QA) ? g : 0.0f;
         d_l1[j] = g;
         d_l1_bias[j] = g;
     }

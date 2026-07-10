@@ -92,5 +92,5 @@ private:
     static int halfKPIndex(int kingSq, int pType, int pSq) {
         return (kingSq * 10 + pType) * 64 + pSq;
     }
-    static int clip(int x) { return std::max(0, std::min(127, x)); }
+    static int crelu(int x) { return std::max(0, std::min(NNUE_QA, x / NNUE_QA)); }
 };
