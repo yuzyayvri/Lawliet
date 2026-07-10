@@ -1264,8 +1264,11 @@ int Lawliet::quiescence(Board& board, int alpha, int beta, int ply, uint64_t has
     }
 
     // Stand pat (Static Evaluation) if not in check
+    int staticEval = 0;
+    bool haveStaticEval = false;
     if (!inCheck) {
-        int staticEval = evaluateBoard(board, alpha, beta, &ctx);
+        staticEval = evaluateBoard(board, alpha, beta, &ctx);
+        haveStaticEval = true;
         ctx.staticEvalCalls++;
         ctx.staticEvalSum += staticEval;
         if (staticEval > ctx.staticEvalMax) ctx.staticEvalMax = staticEval;
@@ -1300,6 +1303,15 @@ int Lawliet::quiescence(Board& board, int alpha, int beta, int ply, uint64_t has
         legalMovesSearched++;
 
         bool givesCheck = board.isInCheck(board.turn);
+
+        // Delta pruning: skip captures that can't realistically raise alpha
+        if (!inCheck && !givesCheck && m.pieceCaptured != 0 && m.promotionPiece == 0) {
+            int victimType = std::abs(m.pieceCaptured) - 1;
+            if (staticEval + Board::pieceValuesMidgame[victimType] + 200 <= alpha) {
+                undoMove(board, m, hash, ctx);
+                continue;
+            }
+        }
 
         // Prune bad captures (SEE < 0) that don't give check; never prune promotions or checks
         if (!inCheck && ctx.moveScores[ply][i] < 10000000 && !givesCheck) {
