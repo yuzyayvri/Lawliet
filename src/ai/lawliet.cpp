@@ -1627,6 +1627,13 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
             nextDepth++; // Apply Singular Extension to PV move search
         }
 
+        // Recapture extension: extend when a piece captures the piece that just moved
+        if (ply > 0 && isCapture && ctx.searchPrevMove[ply].fromSquare >= 0 &&
+            m.toSquare == ctx.searchPrevMove[ply].toSquare) {
+            nextDepth++;
+            ctx.recaptureExtensions++;
+        }
+
         if (movesSearched == 0) {
             ctx.searchPrevMove[ply + 1] = m;
             scoreValue = -negamax(board, nextDepth, -beta, -alpha, ply + 1, hash, tm, ctx, nextLastIrreversible, nextFifty);
