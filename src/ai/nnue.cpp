@@ -21,6 +21,14 @@ NNUE::~NNUE() {
     alignedFree(l2_weights_f_); alignedFree(l2_biases_f_);
     alignedFree(l3_weights_f_); alignedFree(l3_biases_f_);
     alignedFree(scratch_ft_); alignedFree(scratch_l1_); alignedFree(scratch_l2_);
+    alignedFree(ft_m_); alignedFree(ft_v_);
+    alignedFree(ft_b_m_); alignedFree(ft_b_v_);
+    alignedFree(l1_m_); alignedFree(l1_v_);
+    alignedFree(l1_b_m_); alignedFree(l1_b_v_);
+    alignedFree(l2_m_); alignedFree(l2_v_);
+    alignedFree(l2_b_m_); alignedFree(l2_b_v_);
+    alignedFree(l3_m_); alignedFree(l3_v_);
+    alignedFree(l3_b_m_); alignedFree(l3_b_v_);
 }
 
 bool NNUE::loadWeights(const std::string& filename) {
@@ -214,13 +222,18 @@ bool NNUE::trainInit() {
             l3_weights_f_[i] = (float)l3_weights_[i];
         l3_biases_f_[0] = (float)l3_biases_[0];
     } else {
-        // Xavier/Glorot initialization with positive biases for CRELU
-        // Target: hidden layer outputs in the middle of [0, 127] range
-        const float ft_scale = std::sqrt(6.0f / (30.0f + NNUE_FT_OUTPUTS));
-        const float l1_scale = std::sqrt(6.0f / (NNUE_FT_OUTPUTS + NNUE_L1_SIZE));
-        const float l2_scale = std::sqrt(6.0f / (NNUE_L1_SIZE + NNUE_L2_SIZE));
-        const float l3_scale = std::sqrt(6.0f / (NNUE_L2_SIZE + 1.0f));
-        const float bias_init = NNUE_QB * 64.0f;  // ~4096 -> CRELU midpoint of 64
+        // Properly scaled initialization for CRELU network.
+        // Xavier init is designed for tanh/sigmoid and produces vanishingly
+        // small signal through the Clip[0,127] activation with QB=64.
+        // Instead, we scale weights so that each layer's pre-CRELU activation
+        // varies by approximately 32*QB = 2048 around the bias center.
+        // This ensures l1/l2 activations span roughly [32, 96] range,
+        // producing meaningful output variation from the start.
+        const float ft_scale = 1.26f;    // Uniform[-1.26, 1.26]: ft[j] std ~ 4.0 after 30 features
+        const float l1_scale = 55.4f;    // Uniform[-55.4, 55.4]: l1 pre varying by ~2048
+        const float l2_scale = 19.6f;    // Uniform[-19.6, 19.6]: l2 pre varying by ~2048
+        const float l3_scale = 19.6f;    // Uniform[-19.6, 19.6]: output std ~ 174 cp
+        const float bias_init = NNUE_QB * 64.0f;  // 4096 -> CRELU midpoint of 64
 
         uint64_t seed = 42;
         auto rnd = [&]() -> float {
@@ -244,6 +257,45 @@ bool NNUE::trainInit() {
             l3_weights_f_[i] = rnd() * l3_scale;
         l3_biases_f_[0] = 0.0f;
     }
+
+    // Allocate Adam optimizer state buffers (zero-initialized)
+    auto allocAdam = [&]() -> bool {
+        ft_m_ = alignedAlloc<float>(NNUE_FT_OUTPUTS * NNUE_FT_INPUTS);
+        ft_v_ = alignedAlloc<float>(NNUE_FT_OUTPUTS * NNUE_FT_INPUTS);
+        ft_b_m_ = alignedAlloc<float>(NNUE_FT_OUTPUTS);
+        ft_b_v_ = alignedAlloc<float>(NNUE_FT_OUTPUTS);
+        l1_m_ = alignedAlloc<float>(NNUE_L1_SIZE * NNUE_FT_OUTPUTS);
+        l1_v_ = alignedAlloc<float>(NNUE_L1_SIZE * NNUE_FT_OUTPUTS);
+        l1_b_m_ = alignedAlloc<float>(NNUE_L1_SIZE);
+        l1_b_v_ = alignedAlloc<float>(NNUE_L1_SIZE);
+        l2_m_ = alignedAlloc<float>(NNUE_L2_SIZE * NNUE_L1_SIZE);
+        l2_v_ = alignedAlloc<float>(NNUE_L2_SIZE * NNUE_L1_SIZE);
+        l2_b_m_ = alignedAlloc<float>(NNUE_L2_SIZE);
+        l2_b_v_ = alignedAlloc<float>(NNUE_L2_SIZE);
+        l3_m_ = alignedAlloc<float>(NNUE_L3_SIZE * NNUE_L2_SIZE);
+        l3_v_ = alignedAlloc<float>(NNUE_L3_SIZE * NNUE_L2_SIZE);
+        l3_b_m_ = alignedAlloc<float>(NNUE_L3_SIZE);
+        l3_b_v_ = alignedAlloc<float>(NNUE_L3_SIZE);
+        if (!ft_m_ || !ft_v_ || !ft_b_m_ || !ft_b_v_ ||
+            !l1_m_ || !l1_v_ || !l1_b_m_ || !l1_b_v_ ||
+            !l2_m_ || !l2_v_ || !l2_b_m_ || !l2_b_v_ ||
+            !l3_m_ || !l3_v_ || !l3_b_m_ || !l3_b_v_)
+            return false;
+        // Zero-initialize Adam buffers
+        size_t z;
+        for (z = 0; z < (size_t)NNUE_FT_OUTPUTS * NNUE_FT_INPUTS; ++z) ft_m_[z] = ft_v_[z] = 0.0f;
+        for (z = 0; z < (size_t)NNUE_FT_OUTPUTS; ++z) ft_b_m_[z] = ft_b_v_[z] = 0.0f;
+        for (z = 0; z < (size_t)NNUE_L1_SIZE * NNUE_FT_OUTPUTS; ++z) l1_m_[z] = l1_v_[z] = 0.0f;
+        for (z = 0; z < (size_t)NNUE_L1_SIZE; ++z) l1_b_m_[z] = l1_b_v_[z] = 0.0f;
+        for (z = 0; z < (size_t)NNUE_L2_SIZE * NNUE_L1_SIZE; ++z) l2_m_[z] = l2_v_[z] = 0.0f;
+        for (z = 0; z < (size_t)NNUE_L2_SIZE; ++z) l2_b_m_[z] = l2_b_v_[z] = 0.0f;
+        for (z = 0; z < (size_t)NNUE_L3_SIZE * NNUE_L2_SIZE; ++z) l3_m_[z] = l3_v_[z] = 0.0f;
+        for (z = 0; z < (size_t)NNUE_L3_SIZE; ++z) l3_b_m_[z] = l3_b_v_[z] = 0.0f;
+        adam_step_ = 0;
+        return true;
+    };
+    if (!allocAdam()) return false;
+
     return true;
 }
 
@@ -346,37 +398,66 @@ void NNUE::trainStep(const uint64_t* pieceBB, float targetScore, float lr) {
         for (int j = 0; j < NNUE_FT_OUTPUTS; ++j)
             d_ft[j] += d_l1[i] * l1_weights_f_[i * NNUE_FT_OUTPUTS + j];
 
-    // Per-layer learning rates (gradient magnitudes vary vastly across layers)
-    // l3 gradients: ~O(1000), l2: ~O(10), l1: ~O(0.001), ft: ~O(0.001)
-    float lr_ft = lr * 0.1f;
-    float lr_l1 = lr * 0.1f;
-    float lr_l2 = lr * 0.0001f;
-    float lr_l3 = lr * 0.000001f;
+    // === Adam optimizer update ===
+    // Using uniform learning rate across all layers; Adam handles the vastly
+    // different gradient magnitudes automatically via per-parameter normalization.
+    const float beta1 = 0.9f;
+    const float beta2 = 0.999f;
+    const float eps = 1e-8f;
+    adam_step_++;
+    const float step = (float)adam_step_;
+    const float bias_corr1 = 1.0f - std::pow(beta1, step);
+    const float bias_corr2 = 1.0f - std::pow(beta2, step);
 
-    // --- SGD update ---
+    // Helper lambda for Adam update of a single parameter
+    auto adam_update = [&](float& param, float& m, float& v, float grad) {
+        m = beta1 * m + (1.0f - beta1) * grad;
+        v = beta2 * v + (1.0f - beta2) * grad * grad;
+        float m_hat = m / bias_corr1;
+        float v_hat = v / bias_corr2;
+        param -= lr * m_hat / (std::sqrt(v_hat) + eps);
+    };
+
+    // Update feature transformer weights (only active features)
     for (int i = 0; i < wc; ++i) {
-        float* col = &ft_weights_f_[whiteFeat[i] * (size_t)NNUE_FT_OUTPUTS];
+        size_t col_idx = whiteFeat[i] * (size_t)NNUE_FT_OUTPUTS;
+        float* col = &ft_weights_f_[col_idx];
+        float* col_m = &ft_m_[col_idx];
+        float* col_v = &ft_v_[col_idx];
         for (int j = 0; j < NNUE_FT_OUTPUTS; ++j)
-            col[j] -= lr_ft * d_ft[j];
+            adam_update(col[j], col_m[j], col_v[j], d_ft[j]);
     }
+
+    // Update feature transformer biases
     for (int j = 0; j < NNUE_FT_OUTPUTS; ++j)
-        ft_biases_f_[j] -= lr_ft * d_ft[j];
+        adam_update(ft_biases_f_[j], ft_b_m_[j], ft_b_v_[j], d_ft[j]);
 
+    // Update l1 weights and biases
     for (int i = 0; i < NNUE_L1_SIZE; ++i) {
-        l1_biases_f_[i] -= lr_l1 * d_l1_bias[i];
+        float* w = &l1_weights_f_[i * NNUE_FT_OUTPUTS];
+        float* m = &l1_m_[i * NNUE_FT_OUTPUTS];
+        float* v = &l1_v_[i * NNUE_FT_OUTPUTS];
+        float g_w = d_l1[i];
         for (int j = 0; j < NNUE_FT_OUTPUTS; ++j)
-            l1_weights_f_[i * NNUE_FT_OUTPUTS + j] -= lr_l1 * d_l1[i] * scratch_ft_[j];
+            adam_update(w[j], m[j], v[j], g_w * scratch_ft_[j]);
+        adam_update(l1_biases_f_[i], l1_b_m_[i], l1_b_v_[i], d_l1_bias[i]);
     }
 
+    // Update l2 weights and biases
     for (int i = 0; i < NNUE_L2_SIZE; ++i) {
-        l2_biases_f_[i] -= lr_l2 * d_l2_bias[i];
+        float* w = &l2_weights_f_[i * NNUE_L1_SIZE];
+        float* m = &l2_m_[i * NNUE_L1_SIZE];
+        float* v = &l2_v_[i * NNUE_L1_SIZE];
+        float g_w = d_l2[i];
         for (int j = 0; j < NNUE_L1_SIZE; ++j)
-            l2_weights_f_[i * NNUE_L1_SIZE + j] -= lr_l2 * d_l2_weights[i * NNUE_L1_SIZE + j];
+            adam_update(w[j], m[j], v[j], g_w * scratch_l1_[j]);
+        adam_update(l2_biases_f_[i], l2_b_m_[i], l2_b_v_[i], d_l2_bias[i]);
     }
 
+    // Update l3 weights and bias
     for (int j = 0; j < NNUE_L2_SIZE; ++j)
-        l3_weights_f_[j] -= lr_l3 * d_l3_weights[j];
-    l3_biases_f_[0] -= lr_l3 * d_l3_bias;
+        adam_update(l3_weights_f_[j], l3_m_[j], l3_v_[j], d_l3_weights[j]);
+    adam_update(l3_biases_f_[0], l3_b_m_[0], l3_b_v_[0], d_l3_bias);
 }
 
 bool NNUE::saveWeights(const std::string& filename) const {

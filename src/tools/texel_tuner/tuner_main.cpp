@@ -232,8 +232,8 @@ int main(int argc, char* argv[]) {
     bool nnue_mode = false;
     std::string filename = "zurichess_quiet.epd";
     std::string nnue_out = "nnue.bin";
-    int nnue_epochs = 3;
-    float nnue_lr = 0.1f;
+    int nnue_epochs = 10;
+    float nnue_lr = 0.001f;
     size_t nnue_max_pos = 0;
 
     for (int i = 1; i < argc; ++i) {

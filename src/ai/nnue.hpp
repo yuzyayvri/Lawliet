@@ -72,6 +72,17 @@ private:
     float* l3_weights_f_ = nullptr;
     float* l3_biases_f_  = nullptr;
 
+    // Adam optimizer state buffers
+    float* ft_m_ = nullptr;  float* ft_v_ = nullptr;
+    float* ft_b_m_ = nullptr; float* ft_b_v_ = nullptr;
+    float* l1_m_ = nullptr;  float* l1_v_ = nullptr;
+    float* l1_b_m_ = nullptr; float* l1_b_v_ = nullptr;
+    float* l2_m_ = nullptr;  float* l2_v_ = nullptr;
+    float* l2_b_m_ = nullptr; float* l2_b_v_ = nullptr;
+    float* l3_m_ = nullptr;  float* l3_v_ = nullptr;
+    float* l3_b_m_ = nullptr; float* l3_b_v_ = nullptr;
+    int    adam_step_ = 0;
+
     // Scratch buffers for training (owned, reused across steps)
     float* scratch_ft_ = nullptr;
     float* scratch_l1_ = nullptr;
