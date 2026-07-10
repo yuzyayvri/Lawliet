@@ -262,19 +262,23 @@ int Lawliet::evaluateBoard(const Board& board, int alpha, int beta, const Search
     int mgScore = board.mgPst;
     int egScore = board.egPst;
 
+    uint64_t whitePawns = board.pieceBB[0], blackPawns = board.pieceBB[6];
+
+    // Compute pawn zobrist key once; shared by CorrHist and Pawn Hash Table
+    uint64_t pawnKey = 0;
+    uint64_t pk_w = whitePawns;
+    while (pk_w) {
+        pawnKey ^= zobristPiece[__builtin_ctzll(pk_w)][0];
+        pk_w &= pk_w - 1;
+    }
+    uint64_t pk_b = blackPawns;
+    while (pk_b) {
+        pawnKey ^= zobristPiece[__builtin_ctzll(pk_b)][6];
+        pk_b &= pk_b - 1;
+    }
+
     // Apply Static Evaluation Correction History (CorrHist) dynamically based on pawn hash
     if (ctx) {
-        uint64_t pawnKey = 0;
-        uint64_t wp = board.pieceBB[0];
-        while (wp) {
-            pawnKey ^= zobristPiece[__builtin_ctzll(wp)][0];
-            wp &= wp - 1;
-        }
-        uint64_t bp = board.pieceBB[6];
-        while (bp) {
-            pawnKey ^= zobristPiece[__builtin_ctzll(bp)][6];
-            bp &= bp - 1;
-        }
         int sideIdx = (board.turn == Board::WHITE) ? 0 : 1;
         int correction = ctx->corrHist[sideIdx][pawnKey & 65535];
         if (board.turn == Board::WHITE) {
@@ -291,7 +295,7 @@ int Lawliet::evaluateBoard(const Board& board, int alpha, int beta, const Search
     if (whiteBishops >= 2) { mgScore += g_Params.BishopPairMg; egScore += g_Params.BishopPairEg; }
     if (blackBishops >= 2) { mgScore -= g_Params.BishopPairMg; egScore -= g_Params.BishopPairEg; }
 
-    uint64_t whitePawns = board.pieceBB[0], blackPawns = board.pieceBB[6], allPawns = whitePawns | blackPawns;
+    uint64_t allPawns = whitePawns | blackPawns;
 
     uint64_t wPawnAttacks = 0, bPawnAttacks = 0, wp_temp = whitePawns, bp_temp = blackPawns;
     while (wp_temp) { wPawnAttacks |= Board::pawnAttacks[0][__builtin_ctzll(wp_temp)]; wp_temp &= wp_temp - 1; }
@@ -303,18 +307,6 @@ int Lawliet::evaluateBoard(const Board& board, int alpha, int beta, const Search
     int wkSq = board.findKing(Board::WHITE), bkSq = board.findKing(Board::BLACK);
 
     // --- PAWN HASH TABLE (PHT) SKELETON LOOKUP ---
-    uint64_t pawnKey = 0;
-    uint64_t wp_key = whitePawns;
-    while (wp_key) {
-        pawnKey ^= zobristPiece[__builtin_ctzll(wp_key)][0];
-        wp_key &= wp_key - 1;
-    }
-    uint64_t bp_key = blackPawns;
-    while (bp_key) {
-        pawnKey ^= zobristPiece[__builtin_ctzll(bp_key)][6];
-        bp_key &= bp_key - 1;
-    }
-
     PawnEntry localEntry;
     PawnEntry& pEntry = ctx ? ctx->pawnTable[pawnKey & (PAWN_SIZE - 1)] : localEntry;
 
