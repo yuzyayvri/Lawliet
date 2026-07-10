@@ -2252,7 +2252,7 @@ Move Lawliet::thinkThread(Board& board, TimeManager& tm, SearchContext& ctx, int
 
         int alpha = -INF;
         int beta = INF;
-        int window = 18; // Narrower aspiration window margin for faster pruning in stable positions
+        int window = 8 + depth * 2; // Dynamic aspiration window scales with depth
 
         if (depth >= 5 && std::abs(lastScore) < INF - 1000) {
             alpha = lastScore - window;
@@ -2270,7 +2270,7 @@ Move Lawliet::thinkThread(Board& board, TimeManager& tm, SearchContext& ctx, int
                 ctx.failLows++;
                 beta = alpha;
                 alpha = std::max(-INF, score - window);
-                window += window / 2;
+                window += window; // Double window on instability
                 ctx.aspirationWindowSum += window;
                 reSearches++;
                 if (threadId == 0 && !tm.infinite.load() && tm.totalTimeMs.load() > 0) {
@@ -2286,7 +2286,7 @@ Move Lawliet::thinkThread(Board& board, TimeManager& tm, SearchContext& ctx, int
                 ctx.aspirationFailHighs++;
                 alpha = beta;
                 beta = std::min(INF, score + window);
-                window += window / 2;
+                window += window; // Double window on instability
                 ctx.aspirationWindowSum += window;
                 reSearches++;
                 if (threadId == 0 && !tm.infinite.load() && tm.totalTimeMs.load() > 0) {
