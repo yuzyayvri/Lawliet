@@ -1,6 +1,7 @@
 #include "nnue.hpp"
 #include <cstdlib>
 #include <cstring>
+#include <cmath>
 
 // Aligned allocation helpers
 template<typename T> static T* alignedAlloc(size_t n) {
@@ -15,6 +16,11 @@ NNUE::~NNUE() {
     alignedFree(l1_weights_); alignedFree(l1_biases_);
     alignedFree(l2_weights_); alignedFree(l2_biases_);
     alignedFree(l3_weights_); alignedFree(l3_biases_);
+    alignedFree(ft_weights_f_); alignedFree(ft_biases_f_);
+    alignedFree(l1_weights_f_); alignedFree(l1_biases_f_);
+    alignedFree(l2_weights_f_); alignedFree(l2_biases_f_);
+    alignedFree(l3_weights_f_); alignedFree(l3_biases_f_);
+    alignedFree(scratch_ft_); alignedFree(scratch_l1_); alignedFree(scratch_l2_);
 }
 
 bool NNUE::loadWeights(const std::string& filename) {
@@ -130,4 +136,318 @@ int NNUE::evaluate(const uint32_t* whiteFeat, int wCount,
     NNUEAccumulator acc;
     refreshAccumulator(acc, whiteFeat, wCount);
     return forward(acc);
+}
+
+float NNUE::predict(const uint64_t* pieceBB) const {
+    if (!ft_weights_f_) return 0.0f;
+
+    uint32_t whiteFeat[32], blackFeat[32];
+    int wc, bc;
+    extractFeatures(pieceBB, whiteFeat, wc, blackFeat, bc);
+
+    float ft[NNUE_FT_OUTPUTS];
+    std::memcpy(ft, ft_biases_f_, NNUE_FT_OUTPUTS * sizeof(float));
+    for (int i = 0; i < wc; ++i) {
+        const float* col = &ft_weights_f_[whiteFeat[i] * (size_t)NNUE_FT_OUTPUTS];
+        for (int j = 0; j < NNUE_FT_OUTPUTS; ++j)
+            ft[j] += col[j];
+    }
+
+    float l1[NNUE_L1_SIZE];
+    for (int i = 0; i < NNUE_L1_SIZE; ++i) {
+        float sum = l1_biases_f_[i];
+        for (int j = 0; j < NNUE_FT_OUTPUTS; ++j)
+            sum += ft[j] * l1_weights_f_[i * NNUE_FT_OUTPUTS + j];
+        l1[i] = std::max(0.0f, std::min(127.0f, sum / NNUE_QB));
+    }
+
+    float l2[NNUE_L2_SIZE];
+    for (int i = 0; i < NNUE_L2_SIZE; ++i) {
+        float sum = l2_biases_f_[i];
+        for (int j = 0; j < NNUE_L1_SIZE; ++j)
+            sum += l1[j] * l2_weights_f_[i * NNUE_L1_SIZE + j];
+        l2[i] = std::max(0.0f, std::min(127.0f, sum / NNUE_QB));
+    }
+
+    float out = l3_biases_f_[0];
+    for (int j = 0; j < NNUE_L2_SIZE; ++j)
+        out += l2[j] * l3_weights_f_[j];
+
+    return out * NNUE_SCALE / (float)(NNUE_QA * NNUE_QB);
+}
+
+bool NNUE::trainInit() {
+    // Allocate float copies and scratch buffers
+    auto alloc = [&]() -> bool {
+        ft_weights_f_ = alignedAlloc<float>(NNUE_FT_OUTPUTS * NNUE_FT_INPUTS);
+        ft_biases_f_  = alignedAlloc<float>(NNUE_FT_OUTPUTS);
+        l1_weights_f_ = alignedAlloc<float>(NNUE_L1_SIZE * NNUE_FT_OUTPUTS);
+        l1_biases_f_  = alignedAlloc<float>(NNUE_L1_SIZE);
+        l2_weights_f_ = alignedAlloc<float>(NNUE_L2_SIZE * NNUE_L1_SIZE);
+        l2_biases_f_  = alignedAlloc<float>(NNUE_L2_SIZE);
+        l3_weights_f_ = alignedAlloc<float>(NNUE_L3_SIZE * NNUE_L2_SIZE);
+        l3_biases_f_  = alignedAlloc<float>(NNUE_L3_SIZE);
+        scratch_ft_   = alignedAlloc<float>(NNUE_FT_OUTPUTS);
+        scratch_l1_   = alignedAlloc<float>(NNUE_L1_SIZE);
+        scratch_l2_   = alignedAlloc<float>(NNUE_L2_SIZE);
+        return ft_weights_f_ && ft_biases_f_ && l1_weights_f_ && l1_biases_f_
+            && l2_weights_f_ && l2_biases_f_ && l3_weights_f_ && l3_biases_f_
+            && scratch_ft_ && scratch_l1_ && scratch_l2_;
+    };
+    if (!alloc()) return false;
+
+    if (weights_loaded_) {
+        // Copy from quantized weights: q -> float
+        for (size_t i = 0; i < (size_t)NNUE_FT_OUTPUTS * NNUE_FT_INPUTS; ++i)
+            ft_weights_f_[i] = (float)ft_weights_[i];
+        for (int i = 0; i < NNUE_FT_OUTPUTS; ++i)
+            ft_biases_f_[i] = (float)ft_biases_[i];
+        for (size_t i = 0; i < (size_t)NNUE_L1_SIZE * NNUE_FT_OUTPUTS; ++i)
+            l1_weights_f_[i] = (float)l1_weights_[i];
+        for (int i = 0; i < NNUE_L1_SIZE; ++i)
+            l1_biases_f_[i] = (float)l1_biases_[i];
+        for (size_t i = 0; i < (size_t)NNUE_L2_SIZE * NNUE_L1_SIZE; ++i)
+            l2_weights_f_[i] = (float)l2_weights_[i];
+        for (int i = 0; i < NNUE_L2_SIZE; ++i)
+            l2_biases_f_[i] = (float)l2_biases_[i];
+        for (int i = 0; i < NNUE_L2_SIZE; ++i)
+            l3_weights_f_[i] = (float)l3_weights_[i];
+        l3_biases_f_[0] = (float)l3_biases_[0];
+    } else {
+        // Xavier/Glorot initialization with positive biases for CRELU
+        // Target: hidden layer outputs in the middle of [0, 127] range
+        const float ft_scale = std::sqrt(6.0f / (30.0f + NNUE_FT_OUTPUTS));
+        const float l1_scale = std::sqrt(6.0f / (NNUE_FT_OUTPUTS + NNUE_L1_SIZE));
+        const float l2_scale = std::sqrt(6.0f / (NNUE_L1_SIZE + NNUE_L2_SIZE));
+        const float l3_scale = std::sqrt(6.0f / (NNUE_L2_SIZE + 1.0f));
+        const float bias_init = NNUE_QB * 64.0f;  // ~4096 -> CRELU midpoint of 64
+
+        uint64_t seed = 42;
+        auto rnd = [&]() -> float {
+            seed ^= seed >> 12; seed ^= seed << 25; seed ^= seed >> 27;
+            seed *= 0x2545F4914F6CDD1DULL;
+            return (float)((int64_t)(seed % 2001) - 1000) / 1000.0f;
+        };
+        for (size_t i = 0; i < (size_t)NNUE_FT_OUTPUTS * NNUE_FT_INPUTS; ++i)
+            ft_weights_f_[i] = rnd() * ft_scale;
+        for (int i = 0; i < NNUE_FT_OUTPUTS; ++i)
+            ft_biases_f_[i] = 0.0f;
+        for (size_t i = 0; i < (size_t)NNUE_L1_SIZE * NNUE_FT_OUTPUTS; ++i)
+            l1_weights_f_[i] = rnd() * l1_scale;
+        for (int i = 0; i < NNUE_L1_SIZE; ++i)
+            l1_biases_f_[i] = bias_init;
+        for (size_t i = 0; i < (size_t)NNUE_L2_SIZE * NNUE_L1_SIZE; ++i)
+            l2_weights_f_[i] = rnd() * l2_scale;
+        for (int i = 0; i < NNUE_L2_SIZE; ++i)
+            l2_biases_f_[i] = bias_init;
+        for (int i = 0; i < NNUE_L2_SIZE; ++i)
+            l3_weights_f_[i] = rnd() * l3_scale;
+        l3_biases_f_[0] = 0.0f;
+    }
+    return true;
+}
+
+void NNUE::trainStep(const uint64_t* pieceBB, float targetScore, float lr) {
+    // Extract features
+    uint32_t whiteFeat[32], blackFeat[32];
+    int wc, bc;
+    NNUE::extractFeatures(pieceBB, whiteFeat, wc, blackFeat, bc);
+
+    // Forward pass (float version mirroring the quantized forward)
+    // Feature transformer
+    std::memcpy(scratch_ft_, ft_biases_f_, NNUE_FT_OUTPUTS * sizeof(float));
+    for (int i = 0; i < wc; ++i) {
+        const float* col = &ft_weights_f_[whiteFeat[i] * (size_t)NNUE_FT_OUTPUTS];
+        for (int j = 0; j < NNUE_FT_OUTPUTS; ++j)
+            scratch_ft_[j] += col[j];
+    }
+
+    // Layer 1: 256 -> 32
+    for (int i = 0; i < NNUE_L1_SIZE; ++i) {
+        float sum = l1_biases_f_[i];
+        for (int j = 0; j < NNUE_FT_OUTPUTS; ++j)
+            sum += scratch_ft_[j] * l1_weights_f_[i * NNUE_FT_OUTPUTS + j];
+        scratch_l1_[i] = std::max(0.0f, std::min(127.0f, sum / NNUE_QB));
+    }
+
+    // Layer 2: 32 -> 32
+    for (int i = 0; i < NNUE_L2_SIZE; ++i) {
+        float sum = l2_biases_f_[i];
+        for (int j = 0; j < NNUE_L1_SIZE; ++j)
+            sum += scratch_l1_[j] * l2_weights_f_[i * NNUE_L1_SIZE + j];
+        scratch_l2_[i] = std::max(0.0f, std::min(127.0f, sum / NNUE_QB));
+    }
+
+    // Output
+    float out = l3_biases_f_[0];
+    for (int j = 0; j < NNUE_L2_SIZE; ++j)
+        out += scratch_l2_[j] * l3_weights_f_[j];
+
+    float predScore = out * NNUE_SCALE / (float)(NNUE_QA * NNUE_QB);
+
+    // MSE gradient
+    float d_output = 2.0f * (predScore - targetScore);
+    float d_score = d_output * NNUE_SCALE / (float)(NNUE_QA * NNUE_QB);
+
+    // Clamp gradient to prevent explosion
+    const float max_grad = 100.0f;
+    d_score = std::max(-max_grad, std::min(max_grad, d_score));
+
+    // --- Backward pass ---
+
+    // Output layer gradients
+    float d_l3_weights[NNUE_L2_SIZE];
+    for (int j = 0; j < NNUE_L2_SIZE; ++j)
+        d_l3_weights[j] = d_score * scratch_l2_[j];
+    float d_l3_bias = d_score;
+
+    // Layer 2 backward (before CRELU)
+    float d_l2_raw[NNUE_L2_SIZE];
+    for (int j = 0; j < NNUE_L2_SIZE; ++j) {
+        d_l2_raw[j] = d_score * l3_weights_f_[j] / NNUE_QB;
+    }
+
+    // Apply CRELU backward
+    float d_l2[NNUE_L2_SIZE];
+    float d_l2_bias[NNUE_L2_SIZE];
+    for (int j = 0; j < NNUE_L2_SIZE; ++j) {
+        float g = (scratch_l2_[j] > 0.0f && scratch_l2_[j] < 127.0f) ? d_l2_raw[j] : 0.0f;
+        d_l2[j] = g;
+        d_l2_bias[j] = g;
+    }
+
+    // Layer 2 weights gradient
+    float d_l2_weights[NNUE_L2_SIZE * NNUE_L1_SIZE];
+    for (int i = 0; i < NNUE_L2_SIZE; ++i)
+        for (int j = 0; j < NNUE_L1_SIZE; ++j)
+            d_l2_weights[i * NNUE_L1_SIZE + j] = d_l2[i] * scratch_l1_[j];
+
+    // Layer 1 backward
+    float d_l1_raw[NNUE_L1_SIZE];
+    std::memset(d_l1_raw, 0, NNUE_L1_SIZE * sizeof(float));
+    for (int i = 0; i < NNUE_L2_SIZE; ++i)
+        for (int j = 0; j < NNUE_L1_SIZE; ++j)
+            d_l1_raw[j] += d_l2[i] * l2_weights_f_[i * NNUE_L1_SIZE + j];
+
+    // Apply CRELU backward and scale
+    float d_l1[NNUE_L1_SIZE];
+    float d_l1_bias[NNUE_L1_SIZE];
+    for (int j = 0; j < NNUE_L1_SIZE; ++j) {
+        float g = d_l1_raw[j] / NNUE_QB;
+        g = (scratch_l1_[j] > 0.0f && scratch_l1_[j] < 127.0f) ? g : 0.0f;
+        d_l1[j] = g;
+        d_l1_bias[j] = g;
+    }
+
+    // Feature transformer gradients
+    float d_ft[NNUE_FT_OUTPUTS];
+    std::memset(d_ft, 0, NNUE_FT_OUTPUTS * sizeof(float));
+    for (int i = 0; i < NNUE_L1_SIZE; ++i)
+        for (int j = 0; j < NNUE_FT_OUTPUTS; ++j)
+            d_ft[j] += d_l1[i] * l1_weights_f_[i * NNUE_FT_OUTPUTS + j];
+
+    // Per-layer learning rates (gradient magnitudes vary vastly across layers)
+    // l3 gradients: ~O(1000), l2: ~O(10), l1: ~O(0.001), ft: ~O(0.001)
+    float lr_ft = lr * 0.1f;
+    float lr_l1 = lr * 0.1f;
+    float lr_l2 = lr * 0.0001f;
+    float lr_l3 = lr * 0.000001f;
+
+    // --- SGD update ---
+    for (int i = 0; i < wc; ++i) {
+        float* col = &ft_weights_f_[whiteFeat[i] * (size_t)NNUE_FT_OUTPUTS];
+        for (int j = 0; j < NNUE_FT_OUTPUTS; ++j)
+            col[j] -= lr_ft * d_ft[j];
+    }
+    for (int j = 0; j < NNUE_FT_OUTPUTS; ++j)
+        ft_biases_f_[j] -= lr_ft * d_ft[j];
+
+    for (int i = 0; i < NNUE_L1_SIZE; ++i) {
+        l1_biases_f_[i] -= lr_l1 * d_l1_bias[i];
+        for (int j = 0; j < NNUE_FT_OUTPUTS; ++j)
+            l1_weights_f_[i * NNUE_FT_OUTPUTS + j] -= lr_l1 * d_l1[i] * scratch_ft_[j];
+    }
+
+    for (int i = 0; i < NNUE_L2_SIZE; ++i) {
+        l2_biases_f_[i] -= lr_l2 * d_l2_bias[i];
+        for (int j = 0; j < NNUE_L1_SIZE; ++j)
+            l2_weights_f_[i * NNUE_L1_SIZE + j] -= lr_l2 * d_l2_weights[i * NNUE_L1_SIZE + j];
+    }
+
+    for (int j = 0; j < NNUE_L2_SIZE; ++j)
+        l3_weights_f_[j] -= lr_l3 * d_l3_weights[j];
+    l3_biases_f_[0] -= lr_l3 * d_l3_bias;
+}
+
+bool NNUE::saveWeights(const std::string& filename) const {
+    std::ofstream file(filename, std::ios::binary);
+    if (!file) return false;
+
+    file.write("NNUE", 4);
+    int32_t ver = 1;
+    file.write(reinterpret_cast<const char*>(&ver), 4);
+
+    // Quantize float weights back to int16/int8 and write
+    auto write = [&](const void* buf, size_t sz) {
+        file.write(static_cast<const char*>(buf), sz);
+    };
+
+    // Feature transformer weights: float -> int16 (clamp to [-32768, 32767])
+    auto q16 = [](float v) -> int16_t {
+        return (int16_t)std::max(-32768.0f, std::min(32767.0f, std::round(v)));
+    };
+    auto q8 = [](float v) -> int8_t {
+        return (int8_t)std::max(-128.0f, std::min(127.0f, std::round(v)));
+    };
+    auto q32 = [](float v) -> int32_t {
+        return (int32_t)std::max(-2147483648.0f, std::min(2147483647.0f, std::round(v)));
+    };
+
+    // Allocate quantized buffers
+    int16_t* q_ft_w = alignedAlloc<int16_t>(NNUE_FT_OUTPUTS * NNUE_FT_INPUTS);
+    int16_t* q_ft_b = alignedAlloc<int16_t>(NNUE_FT_OUTPUTS);
+    int8_t*  q_l1_w = alignedAlloc<int8_t>(NNUE_L1_SIZE * NNUE_FT_OUTPUTS);
+    int32_t* q_l1_b = alignedAlloc<int32_t>(NNUE_L1_SIZE);
+    int8_t*  q_l2_w = alignedAlloc<int8_t>(NNUE_L2_SIZE * NNUE_L1_SIZE);
+    int32_t* q_l2_b = alignedAlloc<int32_t>(NNUE_L2_SIZE);
+    int8_t*  q_l3_w = alignedAlloc<int8_t>(NNUE_L2_SIZE);
+    int32_t* q_l3_b = alignedAlloc<int32_t>(1);
+
+    if (!q_ft_w || !q_ft_b || !q_l1_w || !q_l1_b || !q_l2_w || !q_l2_b || !q_l3_w || !q_l3_b) {
+        alignedFree(q_ft_w); alignedFree(q_ft_b); alignedFree(q_l1_w);
+        alignedFree(q_l1_b); alignedFree(q_l2_w); alignedFree(q_l2_b);
+        alignedFree(q_l3_w); alignedFree(q_l3_b);
+        return false;
+    }
+
+    for (size_t i = 0; i < (size_t)NNUE_FT_OUTPUTS * NNUE_FT_INPUTS; ++i)
+        q_ft_w[i] = q16(ft_weights_f_[i]);
+    for (int i = 0; i < NNUE_FT_OUTPUTS; ++i)
+        q_ft_b[i] = q16(ft_biases_f_[i]);
+    for (size_t i = 0; i < (size_t)NNUE_L1_SIZE * NNUE_FT_OUTPUTS; ++i)
+        q_l1_w[i] = q8(l1_weights_f_[i]);
+    for (int i = 0; i < NNUE_L1_SIZE; ++i)
+        q_l1_b[i] = q32(l1_biases_f_[i]);
+    for (size_t i = 0; i < (size_t)NNUE_L2_SIZE * NNUE_L1_SIZE; ++i)
+        q_l2_w[i] = q8(l2_weights_f_[i]);
+    for (int i = 0; i < NNUE_L2_SIZE; ++i)
+        q_l2_b[i] = q32(l2_biases_f_[i]);
+    for (int i = 0; i < NNUE_L2_SIZE; ++i)
+        q_l3_w[i] = q8(l3_weights_f_[i]);
+    q_l3_b[0] = q32(l3_biases_f_[0]);
+
+    write(q_ft_w, NNUE_FT_OUTPUTS * NNUE_FT_INPUTS * sizeof(int16_t));
+    write(q_ft_b, NNUE_FT_OUTPUTS * sizeof(int16_t));
+    write(q_l1_w, NNUE_L1_SIZE * NNUE_FT_OUTPUTS * sizeof(int8_t));
+    write(q_l1_b, NNUE_L1_SIZE * sizeof(int32_t));
+    write(q_l2_w, NNUE_L2_SIZE * NNUE_L1_SIZE * sizeof(int8_t));
+    write(q_l2_b, NNUE_L2_SIZE * sizeof(int32_t));
+    write(q_l3_w, NNUE_L3_SIZE * NNUE_L2_SIZE * sizeof(int8_t));
+    write(q_l3_b, NNUE_L3_SIZE * sizeof(int32_t));
+
+    alignedFree(q_ft_w); alignedFree(q_ft_b); alignedFree(q_l1_w);
+    alignedFree(q_l1_b); alignedFree(q_l2_w); alignedFree(q_l2_b);
+    alignedFree(q_l3_w); alignedFree(q_l3_b);
+
+    return true;
 }

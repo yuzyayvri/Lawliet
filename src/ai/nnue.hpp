@@ -45,6 +45,12 @@ public:
                                 uint32_t* whiteFeat, int& wCount,
                                 uint32_t* blackFeat, int& bCount);
 
+    // Training API (calls trainInit first, then trainStep for each position)
+    bool trainInit();
+    float predict(const uint64_t* pieceBB) const;
+    void trainStep(const uint64_t* pieceBB, float targetScore, float lr);
+    bool saveWeights(const std::string& filename) const;
+
 private:
     int16_t* ft_weights_ = nullptr;
     int16_t* ft_biases_  = nullptr;
@@ -55,6 +61,21 @@ private:
     int8_t*  l3_weights_ = nullptr;
     int32_t* l3_biases_  = nullptr;
     bool     weights_loaded_ = false;
+
+    // Float copies for training
+    float* ft_weights_f_ = nullptr;
+    float* ft_biases_f_  = nullptr;
+    float* l1_weights_f_ = nullptr;
+    float* l1_biases_f_  = nullptr;
+    float* l2_weights_f_ = nullptr;
+    float* l2_biases_f_  = nullptr;
+    float* l3_weights_f_ = nullptr;
+    float* l3_biases_f_  = nullptr;
+
+    // Scratch buffers for training (owned, reused across steps)
+    float* scratch_ft_ = nullptr;
+    float* scratch_l1_ = nullptr;
+    float* scratch_l2_ = nullptr;
 
     static int halfKPIndex(int kingSq, int pType, int pSq) {
         return (kingSq * 10 + pType) * 64 + pSq;

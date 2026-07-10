@@ -402,6 +402,8 @@ public:
     int evaluateBoard(const Board& board, int alpha = -INF, int beta = INF, const SearchContext* ctx = nullptr) const;
     bool loadNNUE(const std::string& path);
     bool hasNNUE() const { return nnue.isLoaded(); }
+    NNUE& getNNUE() { return nnue; }
+    const NNUE& getNNUE() const { return nnue; }
     static std::string squareToUci(int sq);
 
     const EngineOptions& getOptions() const { return options; }

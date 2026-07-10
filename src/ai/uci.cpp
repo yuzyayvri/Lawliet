@@ -22,6 +22,13 @@ void UCI::handleCommand(const std::string& line) {
         printOptions();
         std::cout << "uciok" << std::endl;
     } else if (cmd == "isready") {
+        // Try loading NNUE if a path is configured but not yet loaded
+        if (!engine.hasNNUE() && !options.nnuePath.empty()) {
+            engine.loadNNUE(options.nnuePath);
+            if (engine.hasNNUE()) {
+                std::cout << "info string NNUE enabled from: " << options.nnuePath << std::endl;
+            }
+        }
         std::cout << "readyok" << std::endl;
     } else if (cmd == "ucinewgame") {
         if (searchThread.joinable()) {
@@ -77,6 +84,7 @@ void UCI::printOptions() {
     std::cout << "option name Ponder type check default false" << std::endl;
     std::cout << "option name BookPath type string default book.bin" << std::endl;
     std::cout << "option name Move Overhead type spin default 10 min 0 max 10000" << std::endl;
+    std::cout << "option name NNUEPath type string default <empty>" << std::endl;
 }
 
 void UCI::setOption(const std::string& name, const std::string& value) {
@@ -100,6 +108,18 @@ void UCI::setOption(const std::string& name, const std::string& value) {
         options.ponder = (value == "true");
     } else if (lowerName == "move overhead") {
         options.moveOverhead = std::max(0, std::stoi(value));
+    } else if (lowerName == "nnuepath" || lowerName == "nnue path") {
+        options.nnuePath = value;
+        if (!value.empty()) {
+            if (engine.loadNNUE(value)) {
+                std::cout << "info string NNUE enabled from: " << value << std::endl;
+            } else {
+                std::cout << "info string Warning: Failed to load NNUE from: " << value << std::endl;
+            }
+        }
+        if (!engine.hasNNUE()) {
+            std::cout << "info string NNUE not available, using hand-crafted evaluation." << std::endl;
+        }
     }
 }
 

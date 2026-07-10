@@ -227,9 +227,30 @@ static bool is_king_attack_param(const std::string& name) {
 
 int main(int argc, char* argv[]) {
     std::cout << "=== Lawliet Texel Tuning Framework ===" << std::endl;
+
+    // Parse arguments
+    bool nnue_mode = false;
     std::string filename = "zurichess_quiet.epd";
-    if (argc > 1) {
-        filename = argv[1];
+    std::string nnue_out = "nnue.bin";
+    int nnue_epochs = 3;
+    float nnue_lr = 0.1f;
+    size_t nnue_max_pos = 0;
+
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--nnue") {
+            nnue_mode = true;
+        } else if (arg == "--nnue-out" && i + 1 < argc) {
+            nnue_out = argv[++i];
+        } else if (arg == "--nnue-epochs" && i + 1 < argc) {
+            nnue_epochs = std::stoi(argv[++i]);
+        } else if (arg == "--nnue-lr" && i + 1 < argc) {
+            nnue_lr = std::stof(argv[++i]);
+        } else if (arg == "--nnue-max" && i + 1 < argc) {
+            nnue_max_pos = std::stoul(argv[++i]);
+        } else if (arg[0] != '-') {
+            filename = arg;
+        }
     }
 
     std::cout << "Loading EPD dataset from: " << filename << std::endl;
@@ -248,6 +269,57 @@ int main(int argc, char* argv[]) {
         }
     }
     std::cout << "Successfully parsed " << dataset.size() << " valid positions." << std::endl;
+
+    if (nnue_mode) {
+        if (nnue_max_pos > 0 && nnue_max_pos < dataset.size())
+            dataset.resize(nnue_max_pos);
+        std::cout << "NNUE training mode enabled (" << dataset.size() << " positions, "
+                  << nnue_epochs << " epochs, lr=" << nnue_lr << ")" << std::endl;
+
+        Lawliet engine;
+        if (!engine.getNNUE().trainInit()) {
+            std::cerr << "Failed to initialize NNUE training buffers." << std::endl;
+            return 1;
+        }
+        std::cout << "Training buffers allocated." << std::endl;
+
+        Board board;
+        for (int epoch = 1; epoch <= nnue_epochs; ++epoch) {
+            float lr = nnue_lr;
+            double total_mse = 0.0;
+
+            for (size_t i = 0; i < dataset.size(); ++i) {
+                board.loadFen(dataset[i].fen);
+                int hceScore = engine.evaluateBoard(board);
+                float pred = engine.getNNUE().predict(board.pieceBB);
+                float target = static_cast<float>(hceScore);
+
+                engine.getNNUE().trainStep(board.pieceBB, target, lr);
+
+                double diff = pred - target;
+                total_mse += diff * diff;
+
+                if ((i + 1) % 50000 == 0) {
+                    std::cout << "  Epoch " << epoch << "/" << nnue_epochs
+                              << ": " << (i + 1) << "/" << dataset.size()
+                              << " positions processed" << std::endl;
+                }
+            }
+
+            total_mse /= dataset.size();
+            std::cout << "  Epoch " << epoch << " complete. Train MSE: "
+                      << std::fixed << std::setprecision(4) << total_mse << std::endl;
+        }
+
+        std::cout << "Saving NNUE weights to " << nnue_out << " ..." << std::endl;
+        if (engine.getNNUE().saveWeights(nnue_out)) {
+            std::cout << "Weights saved successfully." << std::endl;
+        } else {
+            std::cerr << "Failed to save weights." << std::endl;
+            return 1;
+        }
+        return 0;
+    }
 
     std::vector<ParameterRef> refs = get_parameter_references(g_Params);
     std::cout << "Registered parameters for optimization: " << refs.size() << std::endl;
