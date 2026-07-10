@@ -70,12 +70,23 @@ bool NNUE::loadWeights(const std::string& filename) {
     return true;
 }
 
-// HalfKP(Friend) feature extraction
+// Stockfish 13 HalfKP(Friend) feature extraction
 // pieceBB layout: 0=P_w,1=N_w,2=B_w,3=R_w,4=Q_w,5=K_w,6=P_b,7=N_b,8=B_b,9=R_b,10=Q_b,11=K_b
-// HalfKP piece types: 0=P_w,1=N_w,2=B_w,3=R_w,4=Q_w,5=P_b,6=N_b,7=B_b,8=R_b,9=Q_b
 //
-// "Friend" variant: for the white king perspective, only white pieces (types 0-4)
-// are included; for the black king perspective, only black pieces (types 5-9).
+// HalfKP(Friend) feature index formula (from Stockfish 13 source):
+//   index = orient(perspective, pieceSq) + kpp_board_index[perspective][piece]
+//           + PS_END * orient(perspective, kingSq)
+// where:
+//   - orient(perspective, sq) = sq ^ (perspective * 63)  (rotate 180° for BLACK)
+//   - PS_END = PS_W_KING = 641
+//   - kpp_board_index[WHITE] (perspective=0): W_PAWN=1, W_KNIGHT=129, W_BISHOP=257,
+//     W_ROOK=385, W_QUEEN=513, B_PAWN=65, B_KNIGHT=193, B_BISHOP=321, B_ROOK=449,
+//     B_QUEEN=577
+//   - kpp_board_index[BLACK] (perspective=1): colors reversed (B pieces become "us")
+//
+// IMPORTANT: The "Friend" in HalfKP(Friend) refers to the KING being the
+// friend (side-to-move) king, NOT to piece filtering. ALL non-king pieces
+// (both colors) are included for each perspective!
 void NNUE::extractFeatures(const uint64_t* pieceBB,
                            uint32_t* whiteFeat, int& wCount,
                            uint32_t* blackFeat, int& bCount) {
@@ -85,29 +96,39 @@ void NNUE::extractFeatures(const uint64_t* pieceBB,
     int bKing = pieceBB[11] ? __builtin_ctzll(pieceBB[11]) : -1;
     if (wKing < 0 || bKing < 0) return;
 
-    // Piece type mapping: pieceBB index -> NNUE piece type (0-9)
-    static const int pTypeMap[12] = {0,1,2,3,4,-1,5,6,7,8,9,-1};
+    // kpp_board_index for WHITE perspective (perspective=0):
+    //   white pieces are "us", black pieces are "them"
+    // kpp_board_index for BLACK perspective (perspective=1):
+    //   colors reversed: black pieces become "us", white pieces become "them"
+    // See Stockfish 13 nnue_common.h for the full table.
+    static const int psWhite[12] = {  1, 129, 257, 385, 513, -1,  65, 193, 321, 449, 577, -1};
+    static const int psBlack[12] = { 65, 193, 321, 449, 577, -1,   1, 129, 257, 385, 513, -1};
 
+    // King squares oriented to each perspective:
+    //   orient(WHITE, sq) = sq  (identity)
+    //   orient(BLACK, sq) = sq ^ 63  (rotate 180°)
+    int wKsq = wKing;
+    int bKsq = bKing ^ 63;
+
+    // White perspective: ALL non-king pieces, identity orientation
     for (int i = 0; i < 12; ++i) {
-        int pt = pTypeMap[i];
-        if (pt < 0) continue; // skip kings
+        if (psWhite[i] < 0) continue;  // skip kings (indices 5, 11)
         uint64_t bb = pieceBB[i];
         while (bb) {
             int sq = __builtin_ctzll(bb); bb &= bb - 1;
-            // Friend filtering: white pieces only for white perspective,
-            // black pieces only for black perspective
-            if (pt < 5) {
-                whiteFeat[wCount++] = halfKPIndex(wKing, pt, sq);
-            } else {
-                blackFeat[bCount++] = halfKPIndex(bKing, pt, sq);
-            }
+            whiteFeat[wCount++] = halfKPIndex(wKsq, sq, psWhite[i]);
         }
     }
 
-    // Always-active king features: each king square gets an extra bias feature
-    // at index kingSq * 641 + 640 (the 641st slot per king square).
-    whiteFeat[wCount++] = wKing * 641 + 640;
-    blackFeat[bCount++] = bKing * 641 + 640;
+    // Black perspective: ALL non-king pieces, rotated 180°
+    for (int i = 0; i < 12; ++i) {
+        if (psBlack[i] < 0) continue;  // skip kings (indices 5, 11)
+        uint64_t bb = pieceBB[i];
+        while (bb) {
+            int sq = __builtin_ctzll(bb); bb &= bb - 1;
+            blackFeat[bCount++] = halfKPIndex(bKsq, sq ^ 63, psBlack[i]);
+        }
+    }
 }
 
 int NNUE::forward(const uint8_t* values) const {

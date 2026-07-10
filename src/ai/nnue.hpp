@@ -53,11 +53,15 @@ private:
     int32_t* l3_biases_  = nullptr;  // [1] int32_t
     bool     weights_loaded_ = false;
 
-    // HalfKP Friend index formula: kingSq * 641 + pieceType * 64 + pieceSq
-    // The extra index per king square (kingSq * 641 + 640) is the always-active
-    // king feature. Total: 64 * 641 = 41024.
-    static int halfKPIndex(int kingSq, int pType, int pSq) {
-        return kingSq * 641 + pType * 64 + pSq;
+    // Stockfish 13 HalfKP(Friend) index formula:
+    // index = orient(perspective, pieceSq) + kpp_board_index[perspective][piece]
+    //         + PS_END * orient(perspective, kingSq)
+    // where orient(perspective, sq) = sq ^ (perspective * 63)
+    // and PS_END = PS_W_KING = 641 (from Stockfish 13's nnue_common.h enum)
+    //
+    // The caller passes already-oriented values.
+    static int halfKPIndex(int orientedKingSq, int orientedPieceSq, int psOffset) {
+        return 641 * orientedKingSq + psOffset + orientedPieceSq;
     }
 
     // FT CReLU (no division): clamp(x, 0, NNUE_FT_OUTPUT_MAX)
