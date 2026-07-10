@@ -235,6 +235,7 @@ int main(int argc, char* argv[]) {
     int nnue_epochs = 10;
     float nnue_lr = 0.001f;
     size_t nnue_max_pos = 0;
+    std::string stockfish_data_file = "";
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -248,6 +249,8 @@ int main(int argc, char* argv[]) {
             nnue_lr = std::stof(argv[++i]);
         } else if (arg == "--nnue-max" && i + 1 < argc) {
             nnue_max_pos = std::stoul(argv[++i]);
+        } else if (arg == "--stockfish-data" && i + 1 < argc) {
+            stockfish_data_file = argv[++i];
         } else if (arg[0] != '-') {
             filename = arg;
         }
@@ -270,11 +273,50 @@ int main(int argc, char* argv[]) {
     }
     std::cout << "Successfully parsed " << dataset.size() << " valid positions." << std::endl;
 
+    // Load Stockfish scores if provided
+    std::vector<int> stockfish_scores;
+    if (!stockfish_data_file.empty()) {
+        std::cout << "Loading Stockfish scores from: " << stockfish_data_file << std::endl;
+        std::ifstream sf_file(stockfish_data_file);
+        if (!sf_file) {
+            std::cerr << "Error: Stockfish data file not found: " << stockfish_data_file << std::endl;
+            return 1;
+        }
+        std::string sf_line;
+        while (std::getline(sf_file, sf_line)) {
+            if (sf_line.empty()) continue;
+            // Format: FEN_4_fields|score
+            auto pipe_pos = sf_line.find('|');
+            if (pipe_pos == std::string::npos) continue;
+            try {
+                int score = std::stoi(sf_line.substr(pipe_pos + 1));
+                stockfish_scores.push_back(score);
+            } catch (const std::exception& e) {
+                std::cerr << "Warning: Skipping malformed Stockfish data line: " << sf_line << std::endl;
+                continue;
+            }
+        }
+        std::cout << "Loaded " << stockfish_scores.size() << " Stockfish scores." << std::endl;
+    }
+
     if (nnue_mode) {
         if (nnue_max_pos > 0 && nnue_max_pos < dataset.size())
             dataset.resize(nnue_max_pos);
         std::cout << "NNUE training mode enabled (" << dataset.size() << " positions, "
                   << nnue_epochs << " epochs, lr=" << nnue_lr << ")" << std::endl;
+
+        // Validate stockfish scores match dataset size
+        bool use_stockfish_scores = !stockfish_scores.empty();
+        if (use_stockfish_scores && stockfish_scores.size() != dataset.size()) {
+            std::cerr << "Error: Stockfish data size (" << stockfish_scores.size()
+                      << ") does not match dataset size (" << dataset.size() << ")." << std::endl;
+            return 1;
+        }
+        if (use_stockfish_scores) {
+            std::cout << "Using Stockfish search scores as NNUE training targets." << std::endl;
+        } else {
+            std::cout << "Using Lawliet HCE scores as NNUE training targets." << std::endl;
+        }
 
         Lawliet engine;
         if (!engine.getNNUE().trainInit()) {
@@ -290,10 +332,16 @@ int main(int argc, char* argv[]) {
 
             for (size_t i = 0; i < dataset.size(); ++i) {
                 board.loadFen(dataset[i].fen);
-                int hceScore = engine.evaluateBoard(board);
-                float pred = engine.getNNUE().predict(board.pieceBB);
-                float target = static_cast<float>(hceScore);
 
+                float target;
+                if (use_stockfish_scores) {
+                    target = static_cast<float>(stockfish_scores[i]);
+                } else {
+                    int hceScore = engine.evaluateBoard(board);
+                    target = static_cast<float>(hceScore);
+                }
+
+                float pred = engine.getNNUE().predict(board.pieceBB);
                 engine.getNNUE().trainStep(board.pieceBB, target, lr);
 
                 double diff = pred - target;
