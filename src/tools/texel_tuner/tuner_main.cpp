@@ -229,27 +229,12 @@ int main(int argc, char* argv[]) {
     std::cout << "=== Lawliet Texel Tuning Framework ===" << std::endl;
 
     // Parse arguments
-    bool nnue_mode = false;
     std::string filename = "zurichess_quiet.epd";
-    std::string nnue_out = "nnue.bin";
-    int nnue_epochs = 30;
-    float nnue_lr = 0.01f;
-    size_t nnue_max_pos = 0;
     std::string stockfish_data_file = "";
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
-        if (arg == "--nnue") {
-            nnue_mode = true;
-        } else if (arg == "--nnue-out" && i + 1 < argc) {
-            nnue_out = argv[++i];
-        } else if (arg == "--nnue-epochs" && i + 1 < argc) {
-            nnue_epochs = std::stoi(argv[++i]);
-        } else if (arg == "--nnue-lr" && i + 1 < argc) {
-            nnue_lr = std::stof(argv[++i]);
-        } else if (arg == "--nnue-max" && i + 1 < argc) {
-            nnue_max_pos = std::stoul(argv[++i]);
-        } else if (arg == "--stockfish-data" && i + 1 < argc) {
+        if (arg == "--stockfish-data" && i + 1 < argc) {
             stockfish_data_file = argv[++i];
         } else if (arg[0] != '-') {
             filename = arg;
@@ -273,7 +258,7 @@ int main(int argc, char* argv[]) {
     }
     std::cout << "Successfully parsed " << dataset.size() << " valid positions." << std::endl;
 
-    // Load Stockfish scores if provided
+    // Load Stockfish scores if provided (for HCE training target refinement)
     std::vector<int> stockfish_scores;
     if (!stockfish_data_file.empty()) {
         std::cout << "Loading Stockfish scores from: " << stockfish_data_file << std::endl;
@@ -297,98 +282,6 @@ int main(int argc, char* argv[]) {
             }
         }
         std::cout << "Loaded " << stockfish_scores.size() << " Stockfish scores." << std::endl;
-    }
-
-    if (nnue_mode) {
-        if (nnue_max_pos > 0 && nnue_max_pos < dataset.size())
-            dataset.resize(nnue_max_pos);
-        std::cout << "NNUE training mode enabled (" << dataset.size() << " positions, "
-                  << nnue_epochs << " epochs, lr=" << nnue_lr << ")" << std::endl;
-
-        // Validate stockfish scores match dataset size
-        bool use_stockfish_scores = !stockfish_scores.empty();
-        if (use_stockfish_scores && stockfish_scores.size() != dataset.size()) {
-            std::cerr << "Error: Stockfish data size (" << stockfish_scores.size()
-                      << ") does not match dataset size (" << dataset.size() << ")." << std::endl;
-            return 1;
-        }
-        if (use_stockfish_scores) {
-            std::cout << "Using Stockfish search scores as NNUE training targets." << std::endl;
-        } else {
-            std::cout << "Using Lawliet HCE scores as NNUE training targets." << std::endl;
-        }
-
-        Lawliet engine;
-        if (!engine.getNNUE().trainInit()) {
-            std::cerr << "Failed to initialize NNUE training buffers." << std::endl;
-            return 1;
-        }
-        std::cout << "Training buffers allocated." << std::endl;
-
-        Board board;
-        std::vector<size_t> epoch_order(dataset.size());
-        for (size_t i = 0; i < dataset.size(); ++i) epoch_order[i] = i;
-        std::mt19937 epoch_rng(42);
-
-        for (int epoch = 1; epoch <= nnue_epochs; ++epoch) {
-            float lr = nnue_lr;
-            double total_mse = 0.0;
-
-            // Shuffle the dataset order each epoch so that gradient noise is
-            // isotropic, helping Adam converge faster and to better minima.
-            std::shuffle(epoch_order.begin(), epoch_order.end(), epoch_rng);
-
-            for (size_t idx = 0; idx < dataset.size(); ++idx) {
-                size_t i = epoch_order[idx];
-                board.loadFen(dataset[i].fen);
-
-                // Determine the evaluation from white's perspective.
-                // Stockfish's UCI score and Lawliet's evaluateBoard() both return
-                // from the side-to-move perspective, but NNUE outputs from white's
-                // perspective. For black-to-move positions we must flip the sign.
-                //
-                // Clamp Stockfish mate scores to [-10000, 10000] so that mate
-                // annotations (e.g. 99993 for mate-in-7) do not blow up the MSE
-                // and produce unusable NNUE weights.
-                float target;
-                if (use_stockfish_scores) {
-                    float rawScore = static_cast<float>(stockfish_scores[i]);
-                    rawScore = std::max(-10000.0f, std::min(10000.0f, rawScore));
-                    target = (board.turn == Board::WHITE) ? rawScore : -rawScore;
-                } else {
-                    int hceScore = engine.evaluateBoard(board);
-                    // evaluateBoard returns from side-to-move perspective (+TempoBonus).
-                    // Remove TempoBonus and flip for black positions to get white's perspective.
-                    float whiteScore = static_cast<float>(hceScore) - g_Params.TempoBonus;
-                    target = (board.turn == Board::WHITE) ? whiteScore : -whiteScore;
-                }
-
-                float pred = engine.getNNUE().predict(board.pieceBB);
-                engine.getNNUE().trainStep(board.pieceBB, target, lr);
-
-                double diff = pred - target;
-                total_mse += diff * diff;
-
-                if ((idx + 1) % 50000 == 0) {
-                    std::cout << "  Epoch " << epoch << "/" << nnue_epochs
-                              << ": " << (idx + 1) << "/" << dataset.size()
-                              << " positions processed" << std::endl;
-                }
-            }
-
-            total_mse /= dataset.size();
-            std::cout << "  Epoch " << epoch << " complete. Train MSE: "
-                      << std::fixed << std::setprecision(4) << total_mse << std::endl;
-        }
-
-        std::cout << "Saving NNUE weights to " << nnue_out << " ..." << std::endl;
-        if (engine.getNNUE().saveWeights(nnue_out)) {
-            std::cout << "Weights saved successfully." << std::endl;
-        } else {
-            std::cerr << "Failed to save weights." << std::endl;
-            return 1;
-        }
-        return 0;
     }
 
     std::vector<ParameterRef> refs = get_parameter_references(g_Params);

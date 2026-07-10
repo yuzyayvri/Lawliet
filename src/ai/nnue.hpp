@@ -4,22 +4,22 @@
 #include <algorithm>
 #include <fstream>
 #include <iostream>
-#include <vector>
 
-// NNUE architecture: HalfKP(feature set) -> 256 -> 32 -> 32 -> 1
-constexpr int NNUE_FT_INPUTS  = 40960;  // HalfKP features: 64*10*64
-constexpr int NNUE_FT_OUTPUTS = 256;
-constexpr int NNUE_L1_SIZE    = 32;
-constexpr int NNUE_L2_SIZE    = 32;
-constexpr int NNUE_L3_SIZE    = 1;
+
+// NNUE architecture: HalfKP(Friend)[41024->256x2] -> 32 -> 32 -> 1
+// The Feature Transformer maps 41024 sparse binary features to 256 outputs
+// per king perspective, for a total of 512 accumulated values fed into
+// the first hidden layer.
+constexpr int NNUE_FT_INPUTS    = 41024;  // HalfKP Friend features: 64*641
+constexpr int NNUE_FT_OUTPUTS   = 256;    // Outputs per king perspective
+constexpr int NNUE_FT_TOTAL     = 512;    // Combined white + black perspective
+constexpr int NNUE_L1_SIZE      = 32;
+constexpr int NNUE_L2_SIZE      = 32;
+constexpr int NNUE_L3_SIZE      = 1;
 
 constexpr int NNUE_SCALE = 400;
-constexpr int NNUE_QA    = 255;   // Input quantization
-constexpr int NNUE_QB    = 64;    // Hidden quantization
-
-struct NNUEAccumulator {
-    int32_t values[NNUE_FT_OUTPUTS];
-};
+constexpr int NNUE_QA    = 255;   // Input quantization (CReLU max)
+constexpr int NNUE_QB    = 64;    // Hidden layer quantization
 
 class NNUE {
 public:
@@ -29,68 +29,43 @@ public:
     bool loadWeights(const std::string& filename);
     bool isLoaded() const { return weights_loaded_; }
 
-    // Refresh accumulator for a set of feature indices
-    void refreshAccumulator(NNUEAccumulator& acc,
-                            const uint32_t* features, int count) const;
-
-    // Forward pass from int16 accumulator values -> centipawn score.
-    // Takes saturated int16 values (network was trained for int16 range).
-    int forward(const int16_t* values) const;
-
     // Evaluate position (returns centipawn score from side-to-move perspective)
     int evaluate(const uint32_t* whiteFeatures, int wCount,
                  const uint32_t* blackFeatures, int bCount) const;
 
-    // Extract HalfKP feature indices from piece bitboards
+    // Extract HalfKP Friend feature indices from piece bitboards
     static void extractFeatures(const uint64_t* pieceBB,
                                 uint32_t* whiteFeat, int& wCount,
                                 uint32_t* blackFeat, int& bCount);
 
-    // Training API (calls trainInit first, then trainStep for each position)
-    bool trainInit();
-    float predict(const uint64_t* pieceBB) const;
-    void trainStep(const uint64_t* pieceBB, float targetScore, float lr);
-    bool saveWeights(const std::string& filename) const;
-
 private:
-    int16_t* ft_weights_ = nullptr;
-    int16_t* ft_biases_  = nullptr;
-    int8_t*  l1_weights_ = nullptr;
-    int32_t* l1_biases_  = nullptr;
-    int8_t*  l2_weights_ = nullptr;
-    int32_t* l2_biases_  = nullptr;
-    int8_t*  l3_weights_ = nullptr;
-    int32_t* l3_biases_  = nullptr;
+    int16_t* ft_weights_ = nullptr;  // [41024][256] int16_t
+    int16_t* ft_biases_  = nullptr;  // [256] int16_t
+    int8_t*  l1_weights_ = nullptr;  // [32][512] int8_t
+    int32_t* l1_biases_  = nullptr;  // [32] int32_t
+    int8_t*  l2_weights_ = nullptr;  // [32][32] int8_t
+    int32_t* l2_biases_  = nullptr;  // [32] int32_t
+    int8_t*  l3_weights_ = nullptr;  // [32] int8_t
+    int32_t* l3_biases_  = nullptr;  // [1] int32_t
     bool     weights_loaded_ = false;
 
-    // Float copies for training
-    float* ft_weights_f_ = nullptr;
-    float* ft_biases_f_  = nullptr;
-    float* l1_weights_f_ = nullptr;
-    float* l1_biases_f_  = nullptr;
-    float* l2_weights_f_ = nullptr;
-    float* l2_biases_f_  = nullptr;
-    float* l3_weights_f_ = nullptr;
-    float* l3_biases_f_  = nullptr;
-
-    // Adam optimizer state buffers
-    float* ft_m_ = nullptr;  float* ft_v_ = nullptr;
-    float* ft_b_m_ = nullptr; float* ft_b_v_ = nullptr;
-    float* l1_m_ = nullptr;  float* l1_v_ = nullptr;
-    float* l1_b_m_ = nullptr; float* l1_b_v_ = nullptr;
-    float* l2_m_ = nullptr;  float* l2_v_ = nullptr;
-    float* l2_b_m_ = nullptr; float* l2_b_v_ = nullptr;
-    float* l3_m_ = nullptr;  float* l3_v_ = nullptr;
-    float* l3_b_m_ = nullptr; float* l3_b_v_ = nullptr;
-    int    adam_step_ = 0;
-
-    // Scratch buffers for training (owned, reused across steps)
-    float* scratch_ft_ = nullptr;
-    float* scratch_l1_ = nullptr;
-    float* scratch_l2_ = nullptr;
-
+    // HalfKP Friend index formula: kingSq * 641 + pieceType * 64 + pieceSq
+    // The extra index per king square (kingSq * 641 + 640) is the always-active
+    // king feature. Total: 64 * 641 = 41024.
     static int halfKPIndex(int kingSq, int pType, int pSq) {
-        return (kingSq * 10 + pType) * 64 + pSq;
+        return kingSq * 641 + pType * 64 + pSq;
     }
+
+    // Clipped ReLU: clamp(x / QA) to [0, QA]
     static int crelu(int x) { return std::max(0, std::min(NNUE_QA, x / NNUE_QA)); }
+
+    // Forward pass through the network given a saturated 512-element accumulator
+    int forward(const int16_t* values) const;
 };
+
+// Aligned allocation helpers (file-local, shared across nnue.cpp)
+template<typename T> static T* alignedAllocNNUE(size_t n) {
+    void* p = nullptr;
+    return (posix_memalign(&p, 64, n * sizeof(T)) == 0) ? static_cast<T*>(p) : nullptr;
+}
+template<typename T> static void alignedFreeNNUE(T* p) { free(p); }

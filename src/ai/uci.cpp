@@ -84,7 +84,7 @@ void UCI::printOptions() {
     std::cout << "option name Ponder type check default false" << std::endl;
     std::cout << "option name BookPath type string default book.bin" << std::endl;
     std::cout << "option name Move Overhead type spin default 10 min 0 max 10000" << std::endl;
-    std::cout << "option name NNUEPath type string default nnue.bin" << std::endl;
+    std::cout << "option name NNUEPath type string default nn-62ef826d1a6d.nnue" << std::endl;
 }
 
 void UCI::setOption(const std::string& name, const std::string& value) {
