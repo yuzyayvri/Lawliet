@@ -262,15 +262,11 @@ int Lawliet::evaluateBoard(const Board& board, int alpha, int beta, const Search
         int wCount = 0, bCount = 0;
         NNUE::extractFeatures(board.pieceBB, whiteFeat, wCount, blackFeat, bCount);
         int score = nnue.evaluate(whiteFeat, wCount, blackFeat, bCount, board.turn == Board::WHITE);
-        // NNUE returns score from white's perspective; adjust for side to move.
-        // The NNUE was trained on targets that include the side-to-move encoding
-        // already.  Add TempoBonus (+g_Params.TempoBonus) for consistency with
-        // the hand-crafted evaluation path, so that search heuristics (razoring,
-        // RFP, NMP, stand-pat, CorrHist update) see the same evaluation scale.
-        int relativeScore = (board.turn == Board::WHITE) ? score : -score;
+        // NNUE outputs [side_to_move, ~side_to_move] perspective ordering,
+        // so the return value is already from side-to-move's perspective.
+        int relativeScore = score;
 
-        // Apply Static Evaluation Correction History (CorrHist) dynamically
-        // based on pawn hash, just like the HCE path does.
+        // Apply Static Evaluation Correction History (CorrHist)
         if (ctx) {
             uint64_t pawnKey = 0;
             uint64_t pk_w = board.pieceBB[0];
@@ -288,8 +284,6 @@ int Lawliet::evaluateBoard(const Board& board, int alpha, int beta, const Search
             relativeScore += correction / 16;
         }
 
-        // NNUE already incorporates side-to-move through its architecture;
-        // no TempoBonus needed (unlike HCE path below).
         return relativeScore;
     }
 
