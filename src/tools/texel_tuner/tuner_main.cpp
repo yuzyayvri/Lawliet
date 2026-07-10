@@ -223,6 +223,8 @@ static bool is_king_attack_param(const std::string& name) {
             name == "KingDangerScaleMg");
 }
 
+
+
 int main(int argc, char* argv[]) {
     std::cout << "=== Lawliet Texel Tuning Framework ===" << std::endl;
     std::string filename = "zurichess_quiet.epd";
@@ -275,6 +277,7 @@ int main(int argc, char* argv[]) {
 
     for (size_t i = 0; i < train_size; ++i) {
         board.loadFen(train_set[i].fen);
+
         int base_score = engine.evaluateBoard(board);
         train_base_scores[i] = base_score;
 
@@ -319,6 +322,7 @@ int main(int argc, char* argv[]) {
 
     for (size_t i = 0; i < val_size; ++i) {
         board.loadFen(val_set[i].fen);
+
         int base_score = engine.evaluateBoard(board);
         val_base_scores[i] = base_score;
 
@@ -386,87 +390,93 @@ int main(int argc, char* argv[]) {
     std::vector<double> v(num_params, 0.0);
 
     // Hyperparameters
-    const int epochs = 100;
-    const double lr = 0.35;
+    const int epochs = 50;
+    const int batch_size = 2048;
+    const double base_lr = 0.35;
     const double beta1 = 0.9;
     const double beta2 = 0.999;
     const double epsilon = 1e-8;
     const double l2_lambda = 1e-6;
+    const int early_stopping_patience = 5;
 
-    std::cout << "\nStarting optimization loop (Adam)..." << std::endl;
+    std::cout << "\nStarting optimization loop (mini-batch Adam with cosine annealing)..." << std::endl;
+    std::cout << "  Batch size: " << batch_size << " -> ~" << (train_size / batch_size) << " updates per epoch" << std::endl;
+    std::cout << "  Learning rate schedule: cosine annealing from " << base_lr << " to 0" << std::endl;
+    std::cout << "  Early stopping patience: " << early_stopping_patience << " epochs" << std::endl;
     std::cout << "--------------------------------------------------------" << std::endl;
-    std::cout << " Epoch | Train MSE  | Val MSE    | Param Changes" << std::endl;
+    std::cout << " Epoch | Train MSE  | Val MSE    |   LR    | Updates" << std::endl;
     std::cout << "--------------------------------------------------------" << std::endl;
 
     double best_val_mse = 1e9;
     std::vector<double> best_theta(num_params, 0.0);
+    int epochs_no_improve = 0;
+    int total_updates = 0;
+
+    // Pre-compute training index array for shuffling
+    std::vector<size_t> train_indices(train_size);
+    for (size_t i = 0; i < train_size; ++i) train_indices[i] = i;
 
     for (int epoch = 1; epoch <= epochs; ++epoch) {
-        std::vector<double> grad(num_params, 0.0);
-        std::mutex grad_mtx;
-        double train_mse = 0.0;
+        // Shuffle training indices for each epoch
+        std::shuffle(train_indices.begin(), train_indices.end(), rng);
 
-        auto compute_gradient_chunk = [&](size_t start, size_t end) {
-            std::vector<double> local_grad(num_params, 0.0);
-            double local_train_mse = 0.0;
+        // Cosine annealing: learning rate decays from base_lr to 0
+        double cosine_progress = static_cast<double>(epoch - 1) / epochs;
+        double lr = base_lr * 0.5 * (1.0 + std::cos(cosine_progress * M_PI));
 
-            for (size_t i = start; i < end; ++i) {
-                double score = train_base_scores[i];
-                for (const auto& f : train_features[i]) {
+        double epoch_train_mse = 0.0;
+        size_t batches_in_epoch = 0;
+
+        // Mini-batch loop
+        for (size_t batch_start = 0; batch_start < train_size; batch_start += batch_size) {
+            size_t batch_end = std::min(batch_start + batch_size, train_size);
+            size_t batch_actual = batch_end - batch_start;
+
+            // Compute gradient over this mini-batch
+            std::vector<double> grad(num_params, 0.0);
+            double batch_mse = 0.0;
+
+            for (size_t b = batch_start; b < batch_end; ++b) {
+                size_t idx = train_indices[b];
+                double score = train_base_scores[idx];
+                for (const auto& f : train_features[idx]) {
                     score += theta[f.index] * f.value;
                 }
 
                 double s = 1.0 / (1.0 + std::exp(-C * score));
-                double diff = train_set[i].result - s;
-                local_train_mse += diff * diff;
+                double diff = train_set[idx].result - s;
+                batch_mse += diff * diff;
 
                 double derivative = -2.0 * C * diff * s * (1.0 - s);
-                for (const auto& f : train_features[i]) {
-                    local_grad[f.index] += derivative * f.value;
+                for (const auto& f : train_features[idx]) {
+                    grad[f.index] += derivative * f.value;
                 }
             }
 
-            std::lock_guard<std::mutex> lock(grad_mtx);
-            train_mse += local_train_mse;
+            batch_mse /= batch_actual;
+            epoch_train_mse += batch_mse * batch_actual;
+
+            // Average the gradient over the batch and add L2 regularization
             for (size_t j = 0; j < num_params; ++j) {
-                grad[j] += local_grad[j];
+                grad[j] = (grad[j] / batch_actual) + l2_lambda * theta[j];
             }
-        };
 
-        std::vector<std::thread> optimizer_threads;
-        unsigned int num_threads = std::thread::hardware_concurrency();
-        if (num_threads == 0) num_threads = 4;
-        size_t chunk_size = train_size / num_threads;
+            // Adam update
+            total_updates++;
+            for (size_t j = 0; j < num_params; ++j) {
+                m[j] = beta1 * m[j] + (1.0 - beta1) * grad[j];
+                v[j] = beta2 * v[j] + (1.0 - beta2) * (grad[j] * grad[j]);
 
-        for (unsigned int t = 0; t < num_threads; ++t) {
-            size_t start = t * chunk_size;
-            size_t end = (t == num_threads - 1) ? train_size : start + chunk_size;
-            optimizer_threads.emplace_back(compute_gradient_chunk, start, end);
-        }
-        for (auto& t : optimizer_threads) t.join();
+                double m_hat = m[j] / (1.0 - std::pow(beta1, total_updates));
+                double v_hat = v[j] / (1.0 - std::pow(beta2, total_updates));
 
-        train_mse /= train_size;
-
-        // Apply L2 regularization contribution
-        for (size_t j = 0; j < num_params; ++j) {
-            grad[j] = (grad[j] / train_size) + l2_lambda * theta[j];
-        }
-
-        // Apply Adam update
-        double max_change = 0.0;
-        for (size_t j = 0; j < num_params; ++j) {
-            m[j] = beta1 * m[j] + (1.0 - beta1) * grad[j];
-            v[j] = beta2 * v[j] + (1.0 - beta2) * (grad[j] * grad[j]);
-
-            double m_hat = m[j] / (1.0 - std::pow(beta1, epoch));
-            double v_hat = v[j] / (1.0 - std::pow(beta2, epoch));
-
-            double update = lr * m_hat / (std::sqrt(v_hat) + epsilon);
-            theta[j] -= update;
-            if (std::abs(update) > max_change) {
-                max_change = std::abs(update);
+                theta[j] -= lr * m_hat / (std::sqrt(v_hat) + epsilon);
             }
+
+            batches_in_epoch++;
         }
+
+        epoch_train_mse /= train_size;
 
         // Evaluate on validation set
         double val_mse = 0.0;
@@ -485,15 +495,25 @@ int main(int argc, char* argv[]) {
         if (val_mse < best_val_mse) {
             best_val_mse = val_mse;
             best_theta = theta;
+            epochs_no_improve = 0;
+        } else {
+            epochs_no_improve++;
         }
 
         std::cout << " " << std::setw(5) << epoch << " | "
-        << std::setw(10) << std::fixed << std::setprecision(7) << train_mse << " | "
+        << std::setw(10) << std::fixed << std::setprecision(6) << epoch_train_mse << " | "
         << std::setw(10) << val_mse << " | "
-        << "Max step: " << std::setprecision(4) << max_change << std::endl;
+        << std::setw(6) << std::setprecision(4) << lr << " | "
+        << std::setw(7) << total_updates << std::endl;
+
+        if (epochs_no_improve >= early_stopping_patience) {
+            std::cout << "  Early stopping triggered (no improvement for " << early_stopping_patience << " epochs)." << std::endl;
+            break;
+        }
     }
 
     std::cout << "--------------------------------------------------------" << std::endl;
+    std::cout << "Total parameter updates: " << total_updates << std::endl;
     std::cout << "Optimal epoch found with Validation MSE: " << best_val_mse << std::endl;
 
     // Apply best parameters back to the active configuration
