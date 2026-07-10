@@ -56,7 +56,9 @@ static void printSearchStats(const SearchContext& ctx, int depth, int score, int
     double staticEvalAvg = ctx.staticEvalCalls > 0 ? (static_cast<double>(ctx.staticEvalSum) / ctx.staticEvalCalls) : 0.0;
 
     std::cout << "info string ================ Lawliet Search Stats ================" << std::endl;
-    std::cout << "info string   Depth:         " << depth << " / Seldepth: " << ctx.maxQuiescencePly << std::endl;
+    // Show actual depth reached, fall back to maxDepth (the limit) if none was reached
+    int displayDepth = ctx.reachedDepth > 0 ? ctx.reachedDepth : depth;
+    std::cout << "info string   Depth:         " << displayDepth << " / Seldepth: " << ctx.maxQuiescencePly << std::endl;
     if (std::abs(score) > 9000000) {
         int mateIn = (score > 0) ? (10000000 - score + 1) / 2 : -(10000000 + score + 1) / 2;
         std::cout << "info string   Score:         Mate in " << mateIn << std::endl;
@@ -2331,6 +2333,8 @@ Move Lawliet::thinkThread(Board& board, TimeManager& tm, SearchContext& ctx, int
         if (tm.shouldStop()) break;
 
         // Track aspiration window statistics
+        // Record the actual depth we successfully completed
+        ctx.reachedDepth = depth;
         ctx.aspirationWindowSum += window;
 
         // Record root iteration statistics for the master thread

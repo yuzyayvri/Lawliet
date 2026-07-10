@@ -257,6 +257,7 @@ struct SearchContext {
 
     int maxQuiescencePly = 0;
     int bestScore = 0;
+    int reachedDepth = 0; // Highest depth completed by the iterative deepening loop
     int threadId = 0; // Diversifies Lazy SMP search branches
 
     // Root iteration recording
