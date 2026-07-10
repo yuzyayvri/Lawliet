@@ -369,9 +369,9 @@ int main(int argc, char* argv[]) {
                 double diff = pred - target;
                 total_mse += diff * diff;
 
-                if ((i + 1) % 50000 == 0) {
+                if ((idx + 1) % 50000 == 0) {
                     std::cout << "  Epoch " << epoch << "/" << nnue_epochs
-                              << ": " << (i + 1) << "/" << dataset.size()
+                              << ": " << (idx + 1) << "/" << dataset.size()
                               << " positions processed" << std::endl;
                 }
             }
