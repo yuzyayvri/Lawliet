@@ -288,7 +288,9 @@ int Lawliet::evaluateBoard(const Board& board, int alpha, int beta, const Search
             relativeScore += correction / 16;
         }
 
-        return relativeScore + g_Params.TempoBonus;
+        // NNUE already incorporates side-to-move through its architecture;
+        // no TempoBonus needed (unlike HCE path below).
+        return relativeScore;
     }
 
     int phase = 0;

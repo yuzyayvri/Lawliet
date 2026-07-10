@@ -17,9 +17,10 @@ constexpr int NNUE_L1_SIZE      = 32;
 constexpr int NNUE_L2_SIZE      = 32;
 constexpr int NNUE_L3_SIZE      = 1;
 
-constexpr int NNUE_SCALE = 400;
-constexpr int NNUE_QA    = 255;   // Input quantization (CReLU max)
-constexpr int NNUE_QB    = 64;    // Hidden layer quantization
+constexpr int NNUE_SCALE    = 400;
+constexpr int NNUE_FV_SCALE = 16;    // Output scaling factor (Stockfish v2 protocol)
+constexpr int NNUE_QA       = 255;   // FT quantization (CReLU max)
+constexpr int NNUE_QB       = 64;    // Hidden layer quantization (CReLU max)
 
 class NNUE {
 public:
@@ -56,8 +57,11 @@ private:
         return kingSq * 641 + pType * 64 + pSq;
     }
 
-    // Clipped ReLU: clamp(x / QA) to [0, QA]
+    // Clipped ReLU for Feature Transformer: clamp(x / QA) to [0, QA]
     static int crelu(int x) { return std::max(0, std::min(NNUE_QA, x / NNUE_QA)); }
+
+    // Clipped ReLU for hidden layers: clamp(x / QB) to [0, QB]
+    static int creluHidden(int x) { return std::max(0, std::min(NNUE_QB, x / NNUE_QB)); }
 
     // Forward pass through the network given a saturated 512-element accumulator
     int forward(const int16_t* values) const;

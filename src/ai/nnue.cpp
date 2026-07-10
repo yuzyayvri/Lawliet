@@ -110,22 +110,22 @@ void NNUE::extractFeatures(const uint64_t* pieceBB,
 }
 
 int NNUE::forward(const int16_t* values) const {
-    // Hidden Layer 1: 512 -> 32 (ClippedReLU)
+    // Hidden Layer 1: 512 -> 32 (ClippedReLU with QB=64)
     int32_t l1[NNUE_L1_SIZE];
     for (int i = 0; i < NNUE_L1_SIZE; ++i) {
         int32_t sum = l1_biases_[i];
         for (int j = 0; j < NNUE_FT_TOTAL; ++j)
             sum += (int32_t)values[j] * (int32_t)l1_weights_[i * NNUE_FT_TOTAL + j];
-        l1[i] = crelu(sum);
+        l1[i] = creluHidden(sum);
     }
 
-    // Hidden Layer 2: 32 -> 32 (ClippedReLU)
+    // Hidden Layer 2: 32 -> 32 (ClippedReLU with QB=64)
     int32_t l2[NNUE_L2_SIZE];
     for (int i = 0; i < NNUE_L2_SIZE; ++i) {
         int32_t sum = l2_biases_[i];
         for (int j = 0; j < NNUE_L1_SIZE; ++j)
             sum += l1[j] * (int32_t)l2_weights_[i * NNUE_L1_SIZE + j];
-        l2[i] = crelu(sum);
+        l2[i] = creluHidden(sum);
     }
 
     // Output: 32 -> 1
@@ -133,8 +133,8 @@ int NNUE::forward(const int16_t* values) const {
     for (int j = 0; j < NNUE_L2_SIZE; ++j)
         out += l2[j] * (int32_t)l3_weights_[j];
 
-    // Scale to centipawns
-    return out * NNUE_SCALE / (NNUE_QA * NNUE_QB);
+    // Scale to centipawns: includes FV_SCALE factor for the v2 NNUE protocol
+    return out * NNUE_SCALE / (NNUE_FV_SCALE * NNUE_QA * NNUE_QB);
 }
 
 int NNUE::evaluate(const uint32_t* whiteFeat, int wCount,
