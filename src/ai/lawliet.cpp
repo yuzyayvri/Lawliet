@@ -1372,14 +1372,8 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
         if (totalPieces == 4) {
             int wBishops = __builtin_popcountll(board.pieceBB[2]);
             int bBishops = __builtin_popcountll(board.pieceBB[8]);
-            if (wBishops == 1 && bBishops == 1) {
-                int wBisSq = __builtin_ctzll(board.pieceBB[2]);
-                int bBisSq = __builtin_ctzll(board.pieceBB[8]);
-                bool wbLight = (((1ULL << wBisSq) & 0x55AA55AA55AA55AAULL) != 0);
-                bool bbLight = (((1ULL << bBisSq) & 0x55AA55AA55AA55AAULL) != 0);
-                if (wbLight == bbLight && (board.pieceBB[3] | board.pieceBB[9] | board.pieceBB[4] | board.pieceBB[10]) == 0)
-                    return 0;
-            }
+            if (wBishops == 1 && bBishops == 1 && (board.pieceBB[3] | board.pieceBB[9] | board.pieceBB[4] | board.pieceBB[10]) == 0)
+                return 0;
         }
     }
 
@@ -1405,12 +1399,13 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
     if (staticEval > ctx.staticEvalMax) ctx.staticEvalMax = staticEval;
     if (staticEval < ctx.staticEvalMin) ctx.staticEvalMin = staticEval;
 
-    // Razoring
-    if (depth == 1 && !inCheck && staticEval + 300 < alpha) {
+    // Razoring (depth <= 2): skip full search when hopelessly below alpha
+    if (depth <= 2 && !inCheck && staticEval + 300 * depth < alpha) {
         ctx.razoringApplications++;
-        int qScore = quiescence(board, alpha - 300, beta, ply, hash, tm, ctx);
+        int margin = 300 * depth;
+        int qScore = quiescence(board, alpha - margin, beta, ply, hash, tm, ctx);
         if (tm.shouldStop()) return 0;
-        if (qScore < alpha - 300) return qScore;
+        if (qScore < alpha - margin) return qScore;
     }
 
     bool pvNode = (beta - alpha > 1);
