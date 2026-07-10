@@ -260,9 +260,11 @@ int Lawliet::evaluateBoard(const Board& board, int alpha, int beta, const Search
         int wCount = 0, bCount = 0;
         NNUE::extractFeatures(board.pieceBB, whiteFeat, wCount, blackFeat, bCount);
         int score = nnue.evaluate(whiteFeat, wCount, blackFeat, bCount);
-        // NNUE returns score from white's perspective; adjust for side to move
+        // NNUE returns score from white's perspective; adjust for side to move.
+        // No separate TempoBonus is added because the NNUE was trained on targets
+        // (Stockfish scores or HCE) that already encode the side-to-move advantage.
         int relativeScore = (board.turn == Board::WHITE) ? score : -score;
-        return relativeScore + g_Params.TempoBonus;
+        return relativeScore;
     }
 
     int phase = 0;
