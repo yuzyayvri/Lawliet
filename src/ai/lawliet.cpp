@@ -1574,8 +1574,9 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
     int ttScore = 0; Move ttMove; ttMove.fromSquare = -1;
     bool hasTT = false;
     // Exempt excludedMove (Singular Search) from normal TT probes
+    int16_t cachedNegamaxEval = NO_EVAL;
     if (excludedMove.fromSquare == excludedMove.toSquare) {
-        bool ttCutoff = probeTT(hash, depth, alpha, beta, ttScore, ttMove, ply, ctx);
+        bool ttCutoff = probeTT(hash, depth, alpha, beta, ttScore, ttMove, ply, ctx, &cachedNegamaxEval);
         if (ttCutoff && ply > 0) return ttScore;
         // Singular extension needs a TT move even without a cutoff;
         // probeTT populates ttMove for any existing entry before the cutoff check.
@@ -1584,23 +1585,12 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
 
     bool inCheck = board.isInCheck(board.turn);
 
-    // Try to use cached static eval from TT entry to avoid expensive NNUE evaluation
+    // Use cached static eval from TT (extracted directly by probeTT) to avoid NNUE evaluation
     int staticEval;
     bool evalFromTT = false;
-    if (hasTT && ttMove.fromSquare != -1 && std::abs(ttScore) < INF - 10000) {
-        // probeTT already extracted the stored eval; we access it via a re-read
-        // to determine if a cached eval exists (storedEval != NO_EVAL)
-        TTEntry& evalEntry = transpositionTable[hash & (ttSize - 1)];
-        uint64_t evalData = evalEntry.data.load(std::memory_order_relaxed);
-        uint64_t evalKey = evalEntry.key.load(std::memory_order_relaxed);
-        if ((evalKey ^ evalData) == hash && evalData != 0) {
-            int dummyScore; int dummyDepth; uint8_t dummyFlag; uint16_t dummyFrom, dummyTo; int16_t dummyPromo; uint8_t dummyAge; int16_t storedEval;
-            unpackData(evalData, dummyScore, dummyDepth, dummyFlag, dummyFrom, dummyTo, dummyPromo, dummyAge, storedEval);
-            if (storedEval != NO_EVAL) {
-                staticEval = storedEval;
-                evalFromTT = true;
-            }
-        }
+    if (hasTT && cachedNegamaxEval != NO_EVAL && std::abs(ttScore) < INF - 10000) {
+        staticEval = cachedNegamaxEval;
+        evalFromTT = true;
     }
     if (!evalFromTT) {
         staticEval = evaluateBoard(board, alpha, beta, &ctx);
