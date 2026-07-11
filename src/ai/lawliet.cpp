@@ -1186,7 +1186,7 @@ void Lawliet::undoMove(Board& board, Move& m, uint64_t& hash, SearchContext& ctx
 #endif
 }
 
-void Lawliet::storeTT(uint64_t key, int depth, int score, TTFlag flag, const Move& bestMove, int ply, SearchContext& ctx) {
+void Lawliet::storeTT(uint64_t key, int depth, int score, TTFlag flag, const Move& bestMove, int ply, SearchContext& ctx, int16_t staticEval) {
     if (activeTm && activeTm->shouldStop()) return;
     TTEntry& entry = transpositionTable[key & (ttSize - 1)];
 
@@ -1201,7 +1201,8 @@ void Lawliet::storeTT(uint64_t key, int depth, int score, TTFlag flag, const Mov
         uint8_t dummyFlag = 0;
         uint16_t dummyFrom = 0, dummyTo = 0;
         int16_t dummyPromo = 0;
-        unpackData(currentData, dummyScore, currentDepth, dummyFlag, dummyFrom, dummyTo, dummyPromo, currentAge);
+        int16_t dummyEval = 0;
+        unpackData(currentData, dummyScore, currentDepth, dummyFlag, dummyFrom, dummyTo, dummyPromo, currentAge, dummyEval);
     }
 
     bool replace = false;
@@ -1218,7 +1219,7 @@ void Lawliet::storeTT(uint64_t key, int depth, int score, TTFlag flag, const Mov
         uint16_t toSq = (bestMove.fromSquare != bestMove.toSquare) ? bestMove.toSquare : 0;
         int16_t promo = bestMove.promotionPiece;
 
-        uint64_t newData = packData(scoreToTT(score, ply), depth, flag, fromSq, toSq, promo, ttAge.load(std::memory_order_relaxed));
+        uint64_t newData = packData(scoreToTT(score, ply), depth, flag, fromSq, toSq, promo, ttAge.load(std::memory_order_relaxed), staticEval);
         entry.data.store(newData, std::memory_order_relaxed);
         entry.key.store(key ^ newData, std::memory_order_relaxed);
         ctx.ttStores++;
@@ -1230,7 +1231,7 @@ void Lawliet::storeTT(uint64_t key, int depth, int score, TTFlag flag, const Mov
     }
 }
 
-bool Lawliet::probeTT(uint64_t key, int depth, int alpha, int beta, int& scoreOut, Move& bestMoveOut, int ply, SearchContext& ctx) {
+bool Lawliet::probeTT(uint64_t key, int depth, int alpha, int beta, int& scoreOut, Move& bestMoveOut, int ply, SearchContext& ctx, int16_t* staticEvalOut) {
     ctx.ttLookups++;
     ctx.ttOccupancy++;
     
@@ -1238,11 +1239,15 @@ bool Lawliet::probeTT(uint64_t key, int depth, int alpha, int beta, int& scoreOu
     uint64_t currentData = entry.data.load(std::memory_order_relaxed);
     uint64_t currentKey = entry.key.load(std::memory_order_relaxed);
 
-    if (currentData == 0) return false;
+    if (currentData == 0) {
+        if (staticEvalOut) *staticEvalOut = NO_EVAL;
+        return false;
+    }
 
     uint64_t unpackedKey = currentKey ^ currentData;
     if (unpackedKey != key) {
         ctx.ttAgeCollisions++;
+        if (staticEvalOut) *staticEvalOut = NO_EVAL;
         return false;
     }
 
@@ -1256,7 +1261,11 @@ bool Lawliet::probeTT(uint64_t key, int depth, int alpha, int beta, int& scoreOu
     uint16_t toSq = 0;
     int16_t promo = 0;
     uint8_t dummyAge = 0;
-    unpackData(currentData, ttScore, ttDepth, ttFlag, fromSq, toSq, promo, dummyAge);
+    int16_t storedEval = NO_EVAL;
+    unpackData(currentData, ttScore, ttDepth, ttFlag, fromSq, toSq, promo, dummyAge, storedEval);
+
+    // Return cached static eval to caller if requested
+    if (staticEvalOut) *staticEvalOut = storedEval;
 
     bestMoveOut = Move{};
     if (fromSq != toSq) {
@@ -1486,13 +1495,13 @@ int Lawliet::quiescence(Board& board, int alpha, int beta, int ply, uint64_t has
 
     // Q-Search mate handling
     if (inCheck && legalMovesSearched == 0) {
-        storeTT(hash, 0, -INF + ply, TT_EXACT, Move{}, ply, ctx);
+        storeTT(hash, 0, -INF + ply, TT_EXACT, Move{}, ply, ctx, staticEval);
         return -INF + ply;
     }
 
     TTFlag qFlag = TT_EXACT;
     if (alpha <= originalAlpha) qFlag = TT_ALPHA;
-    storeTT(hash, 0, alpha, qFlag, bestMove, ply, ctx);
+    storeTT(hash, 0, alpha, qFlag, bestMove, ply, ctx, staticEval);
     return alpha;
 }
 
@@ -1567,16 +1576,38 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
     }
 
     bool inCheck = board.isInCheck(board.turn);
-    int staticEval = evaluateBoard(board, alpha, beta, &ctx);
+
+    // Try to use cached static eval from TT entry to avoid expensive NNUE evaluation
+    int staticEval;
+    bool evalFromTT = false;
+    if (hasTT && ttMove.fromSquare != -1 && std::abs(ttScore) < INF - 10000) {
+        // probeTT already extracted the stored eval; we access it via a re-read
+        // to determine if a cached eval exists (storedEval != NO_EVAL)
+        TTEntry& evalEntry = transpositionTable[hash & (ttSize - 1)];
+        uint64_t evalData = evalEntry.data.load(std::memory_order_relaxed);
+        uint64_t evalKey = evalEntry.key.load(std::memory_order_relaxed);
+        if ((evalKey ^ evalData) == hash && evalData != 0) {
+            int dummyScore; int dummyDepth; uint8_t dummyFlag; uint16_t dummyFrom, dummyTo; int16_t dummyPromo; uint8_t dummyAge; int16_t storedEval;
+            unpackData(evalData, dummyScore, dummyDepth, dummyFlag, dummyFrom, dummyTo, dummyPromo, dummyAge, storedEval);
+            if (storedEval != NO_EVAL) {
+                staticEval = storedEval;
+                evalFromTT = true;
+            }
+        }
+    }
+    if (!evalFromTT) {
+        staticEval = evaluateBoard(board, alpha, beta, &ctx);
+    }
     ctx.staticEvalCalls++;
     ctx.staticEvalSum += staticEval;
     if (staticEval > ctx.staticEvalMax) ctx.staticEvalMax = staticEval;
     if (staticEval < ctx.staticEvalMin) ctx.staticEvalMin = staticEval;
 
     // Razoring (depth <= 1): skip full search when hopelessly below alpha
+    // NNUE-tailored razoring: wider margin since NNUE eval is more reliable
     if (depth <= 1 && !inCheck && staticEval + 2500 * depth < alpha) {
         ctx.razoringApplications++;
-        int margin = 4500 * depth; // ~1.8x for NNUE scale (NNUE values ~3x HCE, moderate scaling)
+        int margin = 5000 * depth; // Wider margin for NNUE accuracy
         int qScore = quiescence(board, alpha - margin, beta, ply, hash, tm, ctx);
         if (tm.shouldStop()) return 0;
         if (qScore < alpha - margin) return qScore;
@@ -1595,8 +1626,8 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
         uint64_t currentData = entry.data.load(std::memory_order_relaxed);
         uint64_t currentKey = entry.key.load(std::memory_order_relaxed);
         if ((currentKey ^ currentData) == hash) {
-            int ttDepth = 0, dummyScore = 0; int16_t dummyPromo = 0; uint8_t ttFlag = 0, dummyAge = 0; uint16_t fromSq = 0, toSq = 0;
-            unpackData(currentData, dummyScore, ttDepth, ttFlag, fromSq, toSq, dummyPromo, dummyAge);
+            int ttDepth = 0, dummyScore = 0; int16_t dummyPromo = 0; uint8_t ttFlag = 0, dummyAge = 0; uint16_t fromSq = 0, toSq = 0; int16_t dummyEval = 0;
+            unpackData(currentData, dummyScore, ttDepth, ttFlag, fromSq, toSq, dummyPromo, dummyAge, dummyEval);
             int reReadScore = scoreFromTT(dummyScore, ply);
             int ttDepthMargin = pvNode ? depth - 5 : depth - 3;
             if (ttDepth >= ttDepthMargin && (ttFlag == TT_EXACT || ttFlag == TT_BETA) && std::abs(reReadScore) < INF - 1000) {
@@ -1623,11 +1654,11 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
         }
     }
 
-    // Reverse Futility Pruning (RFP) up to depth 6 (skipped in PV nodes to maintain stability)
-    // Margins scaled ~5x for NNUE evaluation scale
-    if (depth <= 6 && !inCheck && !pvNode && std::abs(beta) < INF - 1000) {
-        // NNUE: wider RFP margins since evaluation is more reliable
-        int margin = 1500 * depth; // ~1.9x for NNUE scale (NNUE values ~3x HCE, moderate scaling)
+    // Reverse Futility Pruning (RFP) - NNUE-tailored: deeper and wider margins
+    // NNUE evaluation is highly accurate, so we can safely prune more aggressively.
+    if (depth <= 9 && !inCheck && !pvNode && std::abs(beta) < INF - 1000) {
+        // Progressive margin: deeper depths get wider margins
+        int margin = 1200 * depth + 400 * depth * depth / 9;
         if (staticEval - margin >= beta) {
             ctx.reverseFutilityApplications++;
             return staticEval - margin;
@@ -1682,8 +1713,11 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
         depth--;
     }
 
+    // NNUE-tailored futility pruning: wider margins at deeper depths
     bool futility = false;
-    if (depth <= 2 && !inCheck && !pvNode && std::abs(alpha) < INF - 1000) { if (staticEval + depth * 750 <= alpha) futility = true; }
+    if (depth <= 3 && !inCheck && !pvNode && std::abs(alpha) < INF - 1000) {
+        if (staticEval + depth * 1000 <= alpha) futility = true;
+    }
 
     generateLegalMoves(board, board.turn, ctx.moveBuffers[ply], ctx.moveCounts[ply]);
     if (ctx.moveCounts[ply] == 0) return inCheck ? -INF + ply : 0;
