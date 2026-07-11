@@ -293,7 +293,7 @@ private:
     int maxDepth;
     OpeningBook book;
     TimeManager* activeTm = nullptr;
-    static constexpr int INF = 10000000;
+    static constexpr int INF = 60000;
     static constexpr int MAX_PLY = 128;
     static constexpr int MAX_QDEPTH = 64;
     static constexpr int MAX_TOTAL_PLY = MAX_PLY + MAX_QDEPTH + 10;
@@ -351,26 +351,48 @@ private:
     static int scoreToTT(int score, int ply);
     static int scoreFromTT(int score, int ply);
 
-    // Packs search depth, flag, move squares, and age into a single 64-bit value
-    static inline uint64_t packData(int score, int depth, uint8_t flag, uint16_t fromSq, uint16_t toSq, int16_t promo, uint8_t age) {
-        uint64_t s = static_cast<uint32_t>(score); // Bits 0-31
-        uint64_t d = static_cast<uint64_t>(std::clamp(depth, 0, 127)) << 32; // Bits 32-38 (7 bits, max 127)
-        uint64_t flg = static_cast<uint64_t>(flag & 3) << 39; // Bits 39-40
-        uint64_t fSq = static_cast<uint64_t>(fromSq & 0x3F) << 41; // Bits 41-46
-        uint64_t tSq = static_cast<uint64_t>(toSq & 0x3F) << 47; // Bits 47-52
-        uint64_t p = static_cast<uint64_t>((promo + 8) & 0xF) << 53; // Bits 53-56
-        uint64_t a = static_cast<uint64_t>(age & 0x7F) << 57; // Bits 57-63 (7 bits, max 127)
-        return s | d | flg | fSq | tSq | p | a;
+    // Sentinel value for "no static eval stored" (INT16_MIN)
+    static constexpr int16_t NO_EVAL = -32768;
+
+    // Packs score, depth, flag, move, age, and static eval into a single 64-bit value.
+    // Layout (64 bits):
+    //   Bits 0-17:  score (18-bit signed, range ±131071)
+    //   Bits 18-23: depth (6 bits, 0-63)
+    //   Bits 24-25: flag  (2 bits)
+    //   Bits 26-31: fromSq (6 bits)
+    //   Bits 32-37: toSq (6 bits)
+    //   Bits 38-41: promo (4 bits, stored as promo+8)
+    //   Bits 42-47: age (6 bits, 0-63)
+    //   Bits 48-63: staticEval (16-bit signed, NO_EVAL = sentinel)
+    static inline uint64_t packData(int score, int depth, uint8_t flag, uint16_t fromSq, uint16_t toSq, int16_t promo, uint8_t age, int16_t staticEval = NO_EVAL) {
+        uint64_t s = static_cast<uint64_t>(static_cast<uint32_t>(std::clamp(score, -131072, 131071))) & 0x3FFFFULL; // 18 bits
+        uint64_t d = static_cast<uint64_t>(std::clamp(depth, 0, 63)) << 18; // 6 bits
+        uint64_t flg = static_cast<uint64_t>(flag & 3) << 24; // 2 bits
+        uint64_t fSq = static_cast<uint64_t>(fromSq & 0x3F) << 26; // 6 bits
+        uint64_t tSq = static_cast<uint64_t>(toSq & 0x3F) << 32; // 6 bits
+        uint64_t p = static_cast<uint64_t>((promo + 8) & 0xF) << 38; // 4 bits
+        uint64_t a = static_cast<uint64_t>(age & 0x3F) << 42; // 6 bits
+        uint64_t e = static_cast<uint64_t>(static_cast<int16_t>(staticEval)) << 48; // 16 bits
+        return s | d | flg | fSq | tSq | p | a | e;
     }
 
+    static inline void unpackData(uint64_t val, int& score, int& depth, uint8_t& flag, uint16_t& fromSq, uint16_t& toSq, int16_t& promo, uint8_t& age, int16_t& staticEval) {
+        // Sign-extend 18-bit score
+        uint32_t rawScore = val & 0x3FFFF;
+        score = (rawScore & 0x20000) ? (static_cast<int>(rawScore) | ~0x3FFFF) : static_cast<int>(rawScore);
+        depth = static_cast<int>((val >> 18) & 0x3F);
+        flag = static_cast<uint8_t>((val >> 24) & 3);
+        fromSq = static_cast<uint16_t>((val >> 26) & 0x3F);
+        toSq = static_cast<uint16_t>((val >> 32) & 0x3F);
+        promo = static_cast<int16_t>(((val >> 38) & 0xF) - 8);
+        age = static_cast<uint8_t>((val >> 42) & 0x3F);
+        staticEval = static_cast<int16_t>(val >> 48);
+    }
+
+    // Backwards-compatible unpack (ignores staticEval)
     static inline void unpackData(uint64_t val, int& score, int& depth, uint8_t& flag, uint16_t& fromSq, uint16_t& toSq, int16_t& promo, uint8_t& age) {
-        score = static_cast<int>(static_cast<int32_t>(val & 0xFFFFFFFFULL));
-        depth = static_cast<int>((val >> 32) & 0x7F);
-        flag = static_cast<uint8_t>((val >> 39) & 3);
-        fromSq = static_cast<uint16_t>((val >> 41) & 0x3F);
-        toSq = static_cast<uint16_t>((val >> 47) & 0x3F);
-        promo = static_cast<int16_t>(((val >> 53) & 0xF) - 8);
-        age = static_cast<uint8_t>((val >> 57) & 0x7F);
+        int16_t dummyEval;
+        unpackData(val, score, depth, flag, fromSq, toSq, promo, age, dummyEval);
     }
 
     // Static Exchange Evaluation (SEE) Algorithm
@@ -383,8 +405,8 @@ private:
     void generateCaptures(const Board& board, int color, Move* out, int& count) const;
     void doMove(Board& board, Move& m, uint64_t& hash, SearchContext& ctx);
     void undoMove(Board& board, Move& m, uint64_t& hash, SearchContext& ctx);
-    void storeTT(uint64_t key, int depth, int score, TTFlag flag, const Move& bestMove, int ply, SearchContext& ctx);
-    bool probeTT(uint64_t key, int depth, int alpha, int beta, int& scoreOut, Move& bestMoveOut, int ply, SearchContext& ctx);
+    void storeTT(uint64_t key, int depth, int score, TTFlag flag, const Move& bestMove, int ply, SearchContext& ctx, int16_t staticEval = NO_EVAL);
+    bool probeTT(uint64_t key, int depth, int alpha, int beta, int& scoreOut, Move& bestMoveOut, int ply, SearchContext& ctx, int16_t* staticEvalOut = nullptr);
     int scoreMove(const Move& m, const Board& board, int ply, const Move& ttMove, SearchContext& ctx) const;
     void orderMoves(Move* moves, int* scores, int count, const Board& board, int ply, const Move& ttMove, SearchContext& ctx) const;
 
