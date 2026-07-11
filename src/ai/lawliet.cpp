@@ -60,8 +60,9 @@ static void printSearchStats(const SearchContext& ctx, int depth, int score, int
     // Show actual depth reached, fall back to maxDepth (the limit) if none was reached
     int displayDepth = ctx.reachedDepth > 0 ? ctx.reachedDepth : depth;
     std::cout << "info string   Depth:         " << displayDepth << " / Seldepth: " << ctx.maxQuiescencePly << std::endl;
-    if (std::abs(score) > 9000000) {
-        int mateIn = (score > 0) ? (10000000 - score + 1) / 2 : -(10000000 + score + 1) / 2;
+    int inf = Lawliet::getINF();
+    if (std::abs(score) > inf - 2000) {
+        int mateIn = (score > 0) ? (inf - score + 1) / 2 : -(inf + score + 1) / 2;
         std::cout << "info string   Score:         Mate in " << mateIn << std::endl;
     } else {
         std::cout << "info string   Score:         " << score << " cp" << std::endl;
@@ -1397,23 +1398,29 @@ int Lawliet::quiescence(Board& board, int alpha, int beta, int ply, uint64_t has
     int originalAlpha = alpha;
     Move bestMove = {};
 
-    // Probe TT for quiescence positions (depth = 0)
+    // Probe TT for quiescence positions (depth = 0) and extract cached static eval
     int ttScore = 0; Move ttMove; ttMove.fromSquare = -1;
-    if (!inCheck && probeTT(hash, 0, alpha, beta, ttScore, ttMove, ply, ctx) && std::abs(ttScore) < INF - 1000) {
+    int16_t cachedQSEval = NO_EVAL;
+    if (!inCheck && probeTT(hash, 0, alpha, beta, ttScore, ttMove, ply, ctx, &cachedQSEval) && std::abs(ttScore) < INF - 1000) {
         if (ttScore >= beta) return beta;
         if (ttScore > alpha) { alpha = ttScore; bestMove = ttMove; }
     }
 
     // Stand pat (Static Evaluation) if not in check
+    // Use cached TT eval if available to avoid expensive NNUE evaluation
     int staticEval = 0;
     bool haveStaticEval = false;
     if (!inCheck) {
-        staticEval = evaluateBoard(board, alpha, beta, &ctx);
+        if (cachedQSEval != NO_EVAL) {
+            staticEval = cachedQSEval;
+        } else {
+            staticEval = evaluateBoard(board, alpha, beta, &ctx);
+            ctx.staticEvalCalls++;
+            ctx.staticEvalSum += staticEval;
+            if (staticEval > ctx.staticEvalMax) ctx.staticEvalMax = staticEval;
+            if (staticEval < ctx.staticEvalMin) ctx.staticEvalMin = staticEval;
+        }
         haveStaticEval = true;
-        ctx.staticEvalCalls++;
-        ctx.staticEvalSum += staticEval;
-        if (staticEval > ctx.staticEvalMax) ctx.staticEvalMax = staticEval;
-        if (staticEval < ctx.staticEvalMin) ctx.staticEvalMin = staticEval;
         if (staticEval >= beta) return beta;
         if (staticEval > alpha) alpha = staticEval;
     }
@@ -1495,7 +1502,7 @@ int Lawliet::quiescence(Board& board, int alpha, int beta, int ply, uint64_t has
 
     // Q-Search mate handling
     if (inCheck && legalMovesSearched == 0) {
-        storeTT(hash, 0, -INF + ply, TT_EXACT, Move{}, ply, ctx, staticEval);
+        storeTT(hash, 0, -INF + ply, TT_EXACT, Move{}, ply, ctx, NO_EVAL);
         return -INF + ply;
     }
 
@@ -1654,11 +1661,11 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
         }
     }
 
-    // Reverse Futility Pruning (RFP) - NNUE-tailored: deeper and wider margins
-    // NNUE evaluation is highly accurate, so we can safely prune more aggressively.
+    // Reverse Futility Pruning (RFP) - NNUE-tailored: deeper and same margins
+    // Extended depth from 6 to 9 for more aggressive pruning with accurate NNUE eval.
     if (depth <= 9 && !inCheck && !pvNode && std::abs(beta) < INF - 1000) {
-        // Progressive margin: deeper depths get wider margins
-        int margin = 1200 * depth + 400 * depth * depth / 9;
+        int margin = 1500 * depth;
+        if (depth >= 7) margin += 300 * (depth - 6); // Additional margin at deeper depths
         if (staticEval - margin >= beta) {
             ctx.reverseFutilityApplications++;
             return staticEval - margin;

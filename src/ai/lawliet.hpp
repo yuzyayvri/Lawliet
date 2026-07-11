@@ -435,6 +435,7 @@ public:
     int evaluateBoard(const Board& board, int alpha = -INF, int beta = INF,
                       const SearchContext* ctx = nullptr, bool forceHCE = false) const;
     bool loadNNUE(const std::string& path);
+    static constexpr int getINF() { return INF; }
     bool hasNNUE() const { return nnue.isLoaded(); }
     NNUE& getNNUE() { return nnue; }
     const NNUE& getNNUE() const { return nnue; }
