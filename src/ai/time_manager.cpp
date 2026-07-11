@@ -60,7 +60,7 @@ void TimeManager::startMovetimeSearch(int movetime) {
     startTimeMs.store(nowMs);
     infinite.store(false);
     allocatedTimeMs.store(movetime);
-    totalTimeMs.store(movetime);
+    totalTimeMs.store(0);  // 0 prevents fail-low/high cap from collapsing allocation
     hardLimitMs.store(std::max(movetime, static_cast<int>(movetime * 1.5)));
 }
 
@@ -115,13 +115,12 @@ bool TimeManager::shouldStopAtRoot(int currentDepth) const {
     if (hard > 0 && elapsed >= hard) {
         stopFlag.store(true);
         return true;
-    }
-
-    // Prevent premature termination at shallow depths in bullet/blitz time controls
-    if (currentDepth > 6 && elapsed >= alloc * 0.50) {
-        stopFlag.store(true);
-        return true;
-    }
+    }        // Prevent premature termination at shallow depths in bullet/blitz time controls
+        // In movetime mode (totalTimeMs=0), skip this to use the full requested time.
+        if (currentDepth > 6 && elapsed >= alloc * 0.50 && totalTimeMs.load() > 0) {
+            stopFlag.store(true);
+            return true;
+        }
 
     if (elapsed >= alloc) {
         stopFlag.store(true);

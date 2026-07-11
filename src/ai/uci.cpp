@@ -43,6 +43,19 @@ void UCI::handleCommand(const std::string& line) {
             searchThread.join();
         }
         position(line);
+    } else if (cmd == "eval") {
+        // Non-standard UCI extension: print the static evaluation for the current position
+        if (searchThread.joinable()) {
+            timeManager.stop();
+            searchThread.join();
+        }
+        int score = engine.evaluateBoard(board, -10000000, 10000000, nullptr);
+        std::string evalType = engine.hasNNUE() ? "NNUE" : "HCE";
+        std::cout << "info string " << evalType << " evaluation: " << score << " cp" << std::endl;
+        if (engine.hasNNUE()) {
+            int hceScore = engine.evaluateBoard(board, -10000000, 10000000, nullptr, true);
+            std::cout << "info string HCE evaluation: " << hceScore << " cp" << std::endl;
+        }
     } else if (cmd == "go") {
         go(line);
     } else if (cmd == "stop") {

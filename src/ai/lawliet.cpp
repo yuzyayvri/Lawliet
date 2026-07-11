@@ -9,6 +9,7 @@
 #include <memory>
 #include <cmath>
 #include <iomanip>
+#include <unistd.h>
 
 static uint64_t polyglotPiece[12][64];
 static uint64_t polyglotCastle[4];
@@ -172,10 +173,11 @@ void Lawliet::initTables() {
             if (d <= 0 || m <= 0) {
                 lmrTable[d][m] = 0;
             } else {
-                double base = std::log(d) * std::log(m) / 1.5;
-                // More aggressive for very late moves
-                if (m >= 6) base += 0.5;
-                if (m >= 12) base += 0.5;
+                // NNUE-tailored LMR: more aggressive because NNUE is more accurate
+                double base = std::log(d) * std::log(m) / 1.3;
+                // More aggressive for late moves
+                if (m >= 4) base += 0.3;
+                if (m >= 8) base += 0.5;
                 lmrTable[d][m] = static_cast<int>(0.5 + base);
             }
         }
@@ -255,36 +257,53 @@ int Lawliet::see(const Board& board, int from, int to, SearchContext& ctx) const
 // ============================================================================
 // DYNAMIC TAPERED EVALUATION ENGINE
 // ============================================================================
-    int Lawliet::evaluateBoard(const Board& board, int alpha, int beta, const SearchContext* ctx) const {
-    // NNUE evaluation path
-    if (nnue.isLoaded()) {
+    int Lawliet::evaluateBoard(const Board& board, int alpha, int beta, const SearchContext* ctx, bool forceHCE) const {
+    // NNUE evaluation path with move-based incremental accumulator updates.
+    // The accumulator is maintained by doMove/undoMove, so evaluateBoard just
+    // uses whatever accumulator is at the top of the search stack.
+    if (nnue.isLoaded() && !forceHCE) {
+        if (ctx && ctx->nnueAccStackIdx >= 0) {
+            // Fast path: use pre-computed accumulator from doMove/undoMove
+            ctx->incrementalUpdates++;
+            return nnue.evaluateWithAcc(
+                ctx->nnueAccStack[ctx->nnueAccStackIdx].accWhite,
+                ctx->nnueAccStack[ctx->nnueAccStackIdx].accBlack,
+                board.turn == Board::WHITE);
+        }
+
+        // Full rebuild path (cold start or stack was invalidated by king move).
+        // Push to the next stack slot to preserve parent accumulators.
         uint32_t whiteFeat[256], blackFeat[256];
         int wCount = 0, bCount = 0;
         NNUE::extractFeatures(board.pieceBB, whiteFeat, wCount, blackFeat, bCount);
-        int score = nnue.evaluate(whiteFeat, wCount, blackFeat, bCount, board.turn == Board::WHITE);
-        // NNUE outputs [side_to_move, ~side_to_move] perspective ordering,
-        // so the return value is already from side-to-move's perspective.
-        int relativeScore = score;
 
-        // Apply Static Evaluation Correction History (CorrHist)
+        int score;
         if (ctx) {
-            uint64_t pawnKey = 0;
-            uint64_t pk_w = board.pieceBB[0];
-            while (pk_w) {
-                pawnKey ^= zobristPiece[__builtin_ctzll(pk_w)][0];
-                pk_w &= pk_w - 1;
+            ctx->fullRecomputations++;
+            int slot = ctx->nnueAccStackIdx + 1;
+            if (slot < 0) slot = 0;
+            if (slot < 128) {
+                nnue.storeAccumulator(whiteFeat, wCount, blackFeat, bCount,
+                                       board.turn == Board::WHITE,
+                                       ctx->nnueAccStack[slot].accWhite,
+                                       ctx->nnueAccStack[slot].accBlack);
+                ctx->nnueAccStackIdx = slot;
+                score = nnue.evaluateWithAcc(ctx->nnueAccStack[slot].accWhite,
+                                              ctx->nnueAccStack[slot].accBlack,
+                                              board.turn == Board::WHITE);
+            } else {
+                alignas(32) int16_t localAccW[256];
+                alignas(32) int16_t localAccB[256];
+                nnue.storeAccumulator(whiteFeat, wCount, blackFeat, bCount,
+                                       board.turn == Board::WHITE,
+                                       localAccW, localAccB);
+                score = nnue.evaluateWithAcc(localAccW, localAccB, board.turn == Board::WHITE);
             }
-            uint64_t pk_b = board.pieceBB[6];
-            while (pk_b) {
-                pawnKey ^= zobristPiece[__builtin_ctzll(pk_b)][6];
-                pk_b &= pk_b - 1;
-            }
-            int sideIdx = (board.turn == Board::WHITE) ? 0 : 1;
-            int correction = ctx->corrHist[sideIdx][pawnKey & 65535];
-            relativeScore += correction / 16;
+        } else {
+            score = nnue.evaluate(whiteFeat, wCount, blackFeat, bCount, board.turn == Board::WHITE);
         }
 
-        return relativeScore + g_Params.TempoBonus;
+        return score;
     }
 
     int phase = 0;
@@ -1070,11 +1089,95 @@ void Lawliet::doMove(Board& board, Move& m, uint64_t& hash, SearchContext& ctx) 
 
     hash ^= zobristCastle[encodeCastling(board)];
     if (board.enPassantTarget >= 0) hash ^= zobristEp[board.enPassantTarget];
+
+    // NNUE move-based incremental accumulator update (after board state is set)
+    if (nnue.isLoaded() && ctx.nnueAccStackIdx >= 0) {
+        bool isKingMove = (std::abs(m.pieceMoved) == 6);
+        if (isKingMove || m.wasCastling) {
+            // Full FT rebuild: king/castling changes the king square for all feature indices
+            int nextIdx = ctx.nnueAccStackIdx + 1;
+            if (nextIdx < 128) {
+                uint32_t whiteFeat[256], blackFeat[256];
+                int wCount = 0, bCount = 0;
+                NNUE::extractFeatures(board.pieceBB, whiteFeat, wCount, blackFeat, bCount);
+                nnue.storeAccumulator(whiteFeat, wCount, blackFeat, bCount,
+                                       board.turn == Board::WHITE,
+                                       ctx.nnueAccStack[nextIdx].accWhite,
+                                       ctx.nnueAccStack[nextIdx].accBlack);
+                ctx.nnueAccStackIdx = nextIdx;
+            }
+        } else {
+            int wKing = board.pieceBB[5] ? __builtin_ctzll(board.pieceBB[5]) : -1;
+            int bKing = board.pieceBB[11] ? __builtin_ctzll(board.pieceBB[11]) : -1;
+            if (wKing >= 0 && bKing >= 0) {
+                int mvPIdx = pieceToZobristIndex(m.pieceMoved);
+                int wKsq = NNUE::orient(0, NNUE::toSfSq(wKing));
+                int bKsq = NNUE::orient(1, NNUE::toSfSq(bKing));
+                int fromSf = NNUE::toSfSq(m.fromSquare);
+                int toSf = NNUE::toSfSq(m.toSquare);
+
+                uint32_t remW = NNUE::featureIndex(mvPIdx, fromSf, wKsq, false);
+                uint32_t addW = NNUE::featureIndex(mvPIdx, toSf, wKsq, false);
+                uint32_t remB = NNUE::featureIndex(mvPIdx, fromSf, bKsq, true);
+                uint32_t addB = NNUE::featureIndex(mvPIdx, toSf, bKsq, true);
+
+                int capIdx = -1, capSfSq = -1;
+                if (m.pieceCaptured != 0) {
+                    capIdx = pieceToZobristIndex(m.pieceCaptured);
+                    capSfSq = NNUE::toSfSq(m.wasEnPassant ? m.enPassantCapturedSquare : m.toSquare);
+                }
+
+                int nextIdx = ctx.nnueAccStackIdx + 1;
+                if (nextIdx < 128) {
+                    ctx.nnueAccStack[nextIdx] = ctx.nnueAccStack[ctx.nnueAccStackIdx];
+
+                    const int16_t* ftW = nnue.getFTWeights();
+                    constexpr int kV = FT_OUTPUTS / SIMD_WIDTH;
+                    __m256i* nW = (__m256i*)ctx.nnueAccStack[nextIdx].accWhite;
+                    __m256i* nB = (__m256i*)ctx.nnueAccStack[nextIdx].accBlack;
+
+                    auto applyFT = [&](uint32_t feat, __m256i* acc, bool doAdd) {
+                        const __m256i* col = (const __m256i*)&ftW[feat * (size_t)FT_OUTPUTS];
+                        #pragma GCC unroll 8
+                        for (int v = 0; v < kV; ++v)
+                            acc[v] = doAdd ? _mm256_add_epi16(acc[v], col[v])
+                                           : _mm256_sub_epi16(acc[v], col[v]);
+                    };
+
+                    applyFT(remW, nW, false);
+                    applyFT(remB, nB, false);
+                    applyFT(addW, nW, true);
+                    applyFT(addB, nB, true);
+
+                    if (m.pieceCaptured != 0 && capIdx >= 0) {
+                        uint32_t capW = NNUE::featureIndex(capIdx, capSfSq, wKsq, false);
+                        uint32_t capB = NNUE::featureIndex(capIdx, capSfSq, bKsq, true);
+                        applyFT(capW, nW, false);
+                        applyFT(capB, nB, false);
+                    }
+
+                    if (m.promotionPiece != 0) {
+                        int promIdx = pieceToZobristIndex(m.promotionPiece);
+                        applyFT(addW, nW, false);
+                        applyFT(addB, nB, false);
+                        uint32_t pW = NNUE::featureIndex(promIdx, toSf, wKsq, false);
+                        uint32_t pB = NNUE::featureIndex(promIdx, toSf, bKsq, true);
+                        applyFT(pW, nW, true);
+                        applyFT(pB, nB, true);
+                    }
+
+                    ctx.nnueAccStackIdx = nextIdx;
+                }
+            }
+        }
+    }
 }
 
 void Lawliet::undoMove(Board& board, Move& m, uint64_t& hash, SearchContext& ctx) {
     board.turn = -board.turn; board.revertMove(m);
     if (ctx.hashStackIdx > 0) hash = ctx.hashStack[--ctx.hashStackIdx];
+    // Restore NNUE accumulator to parent ply
+    if (ctx.nnueAccStackIdx >= 0) ctx.nnueAccStackIdx--;
 #ifndef NDEBUG
     if (!board.checkInvariants()) {
         std::cerr << "FATAL: Board invariant broken at undoMove exit" << std::endl;
@@ -1359,7 +1462,7 @@ int Lawliet::quiescence(Board& board, int alpha, int beta, int ply, uint64_t has
         // Delta pruning: skip captures that can't realistically raise alpha
         if (!inCheck && !givesCheck && haveSee) {
             int victimType = std::abs(m.pieceCaptured) - 1;
-            if (staticEval + Board::pieceValuesMidgame[victimType] + 200 <= alpha) {
+            if (staticEval + Board::pieceValuesMidgame[victimType] + 350 <= alpha) { // ~1.75x for NNUE
                 undoMove(board, m, hash, ctx);
                 continue;
             }
@@ -1471,9 +1574,9 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
     if (staticEval < ctx.staticEvalMin) ctx.staticEvalMin = staticEval;
 
     // Razoring (depth <= 1): skip full search when hopelessly below alpha
-    if (depth <= 1 && !inCheck && staticEval + 500 * depth < alpha) {
+    if (depth <= 1 && !inCheck && staticEval + 2500 * depth < alpha) {
         ctx.razoringApplications++;
-        int margin = 500 * depth;
+        int margin = 4500 * depth; // ~1.8x for NNUE scale (NNUE values ~3x HCE, moderate scaling)
         int qScore = quiescence(board, alpha - margin, beta, ply, hash, tm, ctx);
         if (tm.shouldStop()) return 0;
         if (qScore < alpha - margin) return qScore;
@@ -1521,8 +1624,10 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
     }
 
     // Reverse Futility Pruning (RFP) up to depth 6 (skipped in PV nodes to maintain stability)
+    // Margins scaled ~5x for NNUE evaluation scale
     if (depth <= 6 && !inCheck && !pvNode && std::abs(beta) < INF - 1000) {
-        int margin = 120 * depth;
+        // NNUE: wider RFP margins since evaluation is more reliable
+        int margin = 1500 * depth; // ~1.9x for NNUE scale (NNUE values ~3x HCE, moderate scaling)
         if (staticEval - margin >= beta) {
             ctx.reverseFutilityApplications++;
             return staticEval - margin;
@@ -1542,7 +1647,7 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
         uint64_t nullHash = hash ^ zobristSide; if (board.enPassantTarget != -1) nullHash ^= zobristEp[board.enPassantTarget];
         uint64_t epBackup = board.enPassantTarget; board.enPassantTarget = -1; board.turn = -board.turn;
 
-        int R = 3 + depth / 6 + std::min(3, (staticEval - beta) / 200);
+        int R = 3 + depth / 6 + std::min(3, (staticEval - beta) / 300); // ~1.5x for NNUE scale
         int nullScore = -negamax(board, depth - 1 - R, -beta, -beta + 1, ply + 1, nullHash, tm, ctx, lastIrreversible, fiftyMove + 1, Move{});
 
         board.turn = -board.turn; board.enPassantTarget = epBackup;
@@ -1558,7 +1663,7 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
     if (depth >= 4 && !inCheck && ply > 0 && std::abs(beta) < INF - 1000) {
         ctx.probCutAttempts++;
         int rDepth = depth - 3;
-        int probCutBeta = beta + 200; // Standard 200 cp margin
+        int probCutBeta = beta + 2000; // ~2x margin for NNUE scale (moderate scaling)
 
         // We run a fast shallow search with the elevated beta
         int probScore = negamax(board, rDepth, probCutBeta - 1, probCutBeta, ply, hash, tm, ctx, lastIrreversible, fiftyMove, Move{});
@@ -1570,12 +1675,15 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
     }
 
     // Internal Iterative Reduction (IIR): Drastically saves nodes compared to IID when TT move is missing
-    if (depth >= 3 && ttMove.fromSquare == -1 && !inCheck) {
+    // NNUE: reduce more aggressively when no TT move since evaluations are more accurate
+    if (depth >= 6 && ttMove.fromSquare == -1 && !inCheck) {
+        depth -= 2;
+    } else if (depth >= 3 && ttMove.fromSquare == -1 && !inCheck) {
         depth--;
     }
 
     bool futility = false;
-    if (depth <= 2 && !inCheck && !pvNode && std::abs(alpha) < INF - 1000) { if (staticEval + depth * 150 <= alpha) futility = true; }
+    if (depth <= 2 && !inCheck && !pvNode && std::abs(alpha) < INF - 1000) { if (staticEval + depth * 750 <= alpha) futility = true; }
 
     generateLegalMoves(board, board.turn, ctx.moveBuffers[ply], ctx.moveCounts[ply]);
     if (ctx.moveCounts[ply] == 0) return inCheck ? -INF + ply : 0;
@@ -1596,8 +1704,8 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
     // Sort moves using parallel cached arrays
     orderMoves(ctx.moveBuffers[ply], ctx.moveScores[ply], ctx.moveCounts[ply], board, ply, ttMove, ctx);
 
-    // Safe Late Move Pruning
-    int maxMoves = 3 + depth * depth;
+    // Safe Late Move Pruning (NNUE: slightly more aggressive)
+    int maxMoves = 2 + depth * depth;
 
     int bestScore = -INF; Move bestMove{}; TTFlag flag = TT_ALPHA;
     int movesSearched = 0;      // Tracks moves sent to negamax evaluation
@@ -1635,7 +1743,7 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
         bool givesCheck = board.isInCheck(board.turn);
 
         if (depth <= 4 && !inCheck && isCapture && !givesCheck) {
-            if (seeScore < -17 * depth * depth) {
+            if (seeScore < -85 * depth * depth) {
                 undoMove(board, m, hash, ctx);
                 continue;
             }
@@ -2044,11 +2152,57 @@ void Lawliet::initTT() {
 }
 
 bool Lawliet::loadNNUE(const std::string& path) {
+    // Try the given path first
     if (nnue.loadWeights(path)) {
         std::cout << "info string NNUE weights loaded from: " << path << std::endl;
         return true;
     }
-    std::cout << "info string NNUE weights not found at: " << path << std::endl;
+
+    // Extract just the filename from the path
+    std::string filename = path;
+    size_t sep = path.find_last_of("/\\");
+    if (sep != std::string::npos)
+        filename = path.substr(sep + 1);
+
+    // Build a list of fallback locations to search
+    std::vector<std::string> fallbacks;
+    fallbacks.push_back(filename);                     // Current working directory
+    fallbacks.push_back("build/" + filename);          // build/ subdirectory
+    fallbacks.push_back("../" + filename);             // Parent directory
+    fallbacks.push_back("../build/" + filename);       // ../build/
+    fallbacks.push_back("src/ai/" + filename);         // src/ai/ subdirectory
+    fallbacks.push_back("../src/ai/" + filename);      // ../src/ai/
+    fallbacks.push_back("../../" + filename);          // Grandparent directory
+
+    // Try to find the executable's directory on Linux via /proc/self/exe
+    char exeBuf[4096];
+    ssize_t exeLen = readlink("/proc/self/exe", exeBuf, sizeof(exeBuf) - 1);
+    if (exeLen > 0) {
+        exeBuf[exeLen] = ' ';
+        std::string exePath(exeBuf);
+        size_t exeDirEnd = exePath.find_last_of("/\\");
+        if (exeDirEnd != std::string::npos) {
+            std::string exeDir = exePath.substr(0, exeDirEnd);
+            fallbacks.push_back(exeDir + "/" + filename);  // Next to executable
+            // Try parent of executable directory
+            size_t parentEnd = exeDir.find_last_of("/\\");
+            if (parentEnd != std::string::npos) {
+                fallbacks.push_back(exeDir.substr(0, parentEnd) + "/" + filename);
+            }
+        }
+    }
+
+    // Search all fallback locations
+    for (const auto& fb : fallbacks) {
+        if (nnue.loadWeights(fb)) {
+            std::cout << "info string NNUE weights loaded from: " << fb << std::endl;
+            std::cout << "info string   (configured path: " << path << ")" << std::endl;
+            return true;
+        }
+    }
+
+    std::cout << "info string NNUE weights not found at: " << path
+              << " (searched " << (fallbacks.size() + 1) << " locations)" << std::endl;
     return false;
 }
 
@@ -2245,6 +2399,7 @@ Move Lawliet::thinkThread(Board& board, TimeManager& tm, SearchContext& ctx, int
     uint64_t hash = computeHash(board);
     int lastScore = 0; const int effMaxDepth = maxDepth;
 
+
     auto validateMove = [&](const Move& m) {
         if (m.fromSquare == m.toSquare) return false;
         bool found = false;
@@ -2274,7 +2429,7 @@ Move Lawliet::thinkThread(Board& board, TimeManager& tm, SearchContext& ctx, int
 
         int alpha = -INF;
         int beta = INF;
-        int window = 8 + depth * 2; // Dynamic aspiration window scales with depth
+        int window = 40 + depth * 10; // Wider aspiration window for NNUE scale (~2x)
 
         if (depth >= 5 && std::abs(lastScore) < INF - 1000) {
             alpha = lastScore - window;

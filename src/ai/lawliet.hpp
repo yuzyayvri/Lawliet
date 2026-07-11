@@ -114,6 +114,15 @@ struct SearchContext {
     // Continuation History Heuristic: quiet history based on the previous piece's movement
     int continuationHistory[12][64]{};
 
+    // NNUE accumulator stack for move-based incremental updates
+    // Each ply has its own accumulator, updated by doMove via feature deltas.
+    struct alignas(32) NNUEAccumulator {
+        int16_t accWhite[256];
+        int16_t accBlack[256];
+    };
+    mutable NNUEAccumulator nnueAccStack[128];
+    mutable int nnueAccStackIdx = -1; // -1 = not initialized (need full refresh)
+
     // Static Evaluation Correction History (CorrHist) - 16-bit index for finer granularity
     int corrHist[2][65536]{};
 
@@ -165,8 +174,8 @@ struct SearchContext {
 
     // Static evaluation pipeline statistics
     int64_t staticEvalCalls = 0;
-    int64_t incrementalUpdates = 0;
-    int64_t fullRecomputations = 0;
+    mutable int64_t incrementalUpdates = 0;
+    mutable int64_t fullRecomputations = 0;
     int64_t staticEvalSum = 0;
     int staticEvalMax = -9999999;
     int staticEvalMin = 9999999;
@@ -400,7 +409,9 @@ public:
 
     Move think(Board& board);
     Move think(Board& board, TimeManager& tm);
-    int evaluateBoard(const Board& board, int alpha = -INF, int beta = INF, const SearchContext* ctx = nullptr) const;
+    // Evaluate board. If forceHCE=true and NNUE is loaded, still use HCE instead.
+    int evaluateBoard(const Board& board, int alpha = -INF, int beta = INF,
+                      const SearchContext* ctx = nullptr, bool forceHCE = false) const;
     bool loadNNUE(const std::string& path);
     bool hasNNUE() const { return nnue.isLoaded(); }
     NNUE& getNNUE() { return nnue; }

@@ -1,92 +1,98 @@
+#pragma GCC optimize("O3,unroll-loops,fast-math")
+#pragma GCC target("avx2,bmi,bmi2,lzcnt,popcnt")
 #include "nnue.hpp"
 #include <cstdlib>
 #include <cstring>
 
+// read_little_endian: read a value from a stream in little-endian byte order.
+template <typename IntType>
+static IntType read_little_endian(std::istream& stream) {
+    IntType result;
+    std::uint8_t u[sizeof(IntType)];
+    typename std::make_unsigned<IntType>::type v = 0;
+    stream.read(reinterpret_cast<char*>(u), sizeof(IntType));
+    for (std::size_t i = 0; i < sizeof(IntType); ++i)
+        v = (v << 8) | u[sizeof(IntType) - i - 1];
+    std::memcpy(&result, &v, sizeof(IntType));
+    return result;
+}
+
 NNUE::NNUE() {}
 NNUE::~NNUE() {
-    alignedFreeNNUE(ft_weights_); alignedFreeNNUE(ft_biases_);
-    alignedFreeNNUE(l1_weights_); alignedFreeNNUE(l1_biases_);
-    alignedFreeNNUE(l2_weights_); alignedFreeNNUE(l2_biases_);
-    alignedFreeNNUE(l3_weights_); alignedFreeNNUE(l3_biases_);
+    alignedFree(ft_weights_); alignedFree(ft_biases_);
+    alignedFree(l1_weights_); alignedFree(l1_biases_);
+    alignedFree(l2_weights_); alignedFree(l2_biases_);
+    alignedFree(l3_weights_); alignedFree(l3_biases_);
 }
 
 bool NNUE::loadWeights(const std::string& filename) {
     std::ifstream file(filename, std::ios::binary);
     if (!file) return false;
 
-    // --- Stockfish NNUE binary format (v2) header ---
-    // Bytes 0-7:   64-bit network hash identifier
-    // Bytes 8-11:  uint32 LE description length
-    // Bytes 12+:   description string (not null-terminated)
-    // Then:        raw weight data in order: ft_w, ft_b, l1_w, l1_b, l2_w, l2_b, l3_w, l3_b
+    std::uint32_t version = read_little_endian<std::uint32_t>(file);
+    [[maybe_unused]] std::uint32_t net_hash = read_little_endian<std::uint32_t>(file);
+    std::uint32_t desc_len = read_little_endian<std::uint32_t>(file);
+    if (!file || version != 0x7AF32F16u) return false;
 
-    char hash[8];
-    file.read(hash, 8);  // skip hash
-
-    int32_t descLen;
-    file.read(reinterpret_cast<char*>(&descLen), 4);
-    if (descLen <= 0 || descLen > 1024) return false;
-
-    // Validate the description string contains expected architecture
-    std::string desc(descLen, '\0');
-    file.read(desc.data(), descLen);
+    std::string desc(desc_len, '\0');
+    file.read(desc.data(), desc_len);
     if (desc.find("Features=HalfKP") == std::string::npos) {
-        std::cerr << "info string NNUE error: unexpected network architecture: "
+        std::cerr << "info string NNUE error: unexpected architecture: "
                   << desc.substr(0, 80) << std::endl;
         return false;
     }
 
-    // --- Allocate aligned buffers ---
+    // Skip FeatureTransformer sub-architecture hash (4 bytes)
+    read_little_endian<std::uint32_t>(file);
+
+    // Allocate aligned buffers (64-byte aligned for AVX2)
     auto alloc = [&]() -> bool {
-        ft_weights_ = alignedAllocNNUE<int16_t>(NNUE_FT_INPUTS * (size_t)NNUE_FT_OUTPUTS);
-        ft_biases_  = alignedAllocNNUE<int16_t>(NNUE_FT_OUTPUTS);
-        l1_weights_ = alignedAllocNNUE<int8_t>(NNUE_L1_SIZE * (size_t)NNUE_FT_TOTAL);
-        l1_biases_  = alignedAllocNNUE<int32_t>(NNUE_L1_SIZE);
-        l2_weights_ = alignedAllocNNUE<int8_t>(NNUE_L2_SIZE * (size_t)NNUE_L1_SIZE);
-        l2_biases_  = alignedAllocNNUE<int32_t>(NNUE_L2_SIZE);
-        l3_weights_ = alignedAllocNNUE<int8_t>(NNUE_L3_SIZE * (size_t)NNUE_L2_SIZE);
-        l3_biases_  = alignedAllocNNUE<int32_t>(NNUE_L3_SIZE);
+        ft_weights_ = alignedAlloc<int16_t>(FT_INPUTS * (size_t)FT_OUTPUTS);
+        ft_biases_  = alignedAlloc<int16_t>(FT_OUTPUTS);
+        l1_weights_ = alignedAlloc<int8_t>(L1_SIZE * (size_t)FT_TOTAL);
+        l1_biases_  = alignedAlloc<int32_t>(L1_SIZE);
+        l2_weights_ = alignedAlloc<int8_t>(L2_SIZE * (size_t)L1_SIZE);
+        l2_biases_  = alignedAlloc<int32_t>(L2_SIZE);
+        l3_weights_ = alignedAlloc<int8_t>(L3_SIZE * (size_t)L2_SIZE);
+        l3_biases_  = alignedAlloc<int32_t>(L3_SIZE);
         return ft_weights_ && ft_biases_ && l1_weights_ && l1_biases_
             && l2_weights_ && l2_biases_ && l3_weights_ && l3_biases_;
     };
     if (!alloc()) return false;
 
-    // --- Read layers ---
-    auto read = [&](void* buf, size_t sz) {
-        file.read(static_cast<char*>(buf), sz);
-    };
+    // Read FeatureTransformer parameters (biases then weights)
+    for (int i = 0; i < FT_OUTPUTS; ++i)
+        ft_biases_[i] = read_little_endian<int16_t>(file);
+    for (size_t i = 0; i < (size_t)FT_INPUTS * FT_OUTPUTS; ++i)
+        ft_weights_[i] = read_little_endian<int16_t>(file);
 
-    // Stockfish 13 file format: all layers store biases BEFORE weights
-    read(ft_biases_,  NNUE_FT_OUTPUTS * sizeof(int16_t));
-    read(ft_weights_, NNUE_FT_INPUTS * (size_t)NNUE_FT_OUTPUTS * sizeof(int16_t));
-    read(l1_biases_,  NNUE_L1_SIZE * sizeof(int32_t));
-    read(l1_weights_, (size_t)NNUE_L1_SIZE * NNUE_FT_TOTAL * sizeof(int8_t));
-    read(l2_biases_,  NNUE_L2_SIZE * sizeof(int32_t));
-    read(l2_weights_, (size_t)NNUE_L2_SIZE * NNUE_L1_SIZE * sizeof(int8_t));
-    read(l3_biases_,  NNUE_L3_SIZE * sizeof(int32_t));
-    read(l3_weights_, (size_t)NNUE_L3_SIZE * NNUE_L2_SIZE * sizeof(int8_t));
+    // Skip Network sub-architecture hash (4 bytes)
+    read_little_endian<std::uint32_t>(file);
 
-    weights_loaded_ = true;
-    return true;
+    if (file.fail()) return false;
+
+    // Layer 1: 32 biases (int32) + 32x512 weights (int8)
+    for (int i = 0; i < L1_SIZE; ++i)
+        l1_biases_[i] = read_little_endian<int32_t>(file);
+    for (size_t i = 0; i < (size_t)L1_SIZE * FT_TOTAL; ++i)
+        l1_weights_[i] = read_little_endian<int8_t>(file);
+
+    // Layer 2: 32 biases (int32) + 32x32 weights (int8)
+    for (int i = 0; i < L2_SIZE; ++i)
+        l2_biases_[i] = read_little_endian<int32_t>(file);
+    for (size_t i = 0; i < (size_t)L2_SIZE * L1_SIZE; ++i)
+        l2_weights_[i] = read_little_endian<int8_t>(file);
+
+    // Output layer: 1 bias (int32) + 32 weights (int8)
+    l3_biases_[0] = read_little_endian<int32_t>(file);
+    for (size_t i = 0; i < (size_t)L3_SIZE * L2_SIZE; ++i)
+        l3_weights_[i] = read_little_endian<int8_t>(file);
+
+    weights_loaded_ = !file.fail();
+    return weights_loaded_;
 }
 
-// Stockfish 13 HalfKP(Friend) feature extraction
-// pieceBB layout: 0=P_w,1=N_w,2=B_w,3=R_w,4=Q_w,5=K_w,6=P_b,7=N_b,8=B_b,9=R_b,10=Q_b,11=K_b
-//
-// HalfKP(Friend) feature index formula (from Stockfish 13 source):
-//   index = orient(perspective, pieceSq) + kpp_board_index[perspective][piece]
-//           + PS_END * orient(perspective, kingSq)
-// where:
-//   - orient(perspective, sq) = sq ^ (perspective * 63)  (rotate 180° for BLACK)
-//   - PS_END = PS_W_KING = 641
-//   - kpp_board_index[WHITE] (perspective=0): W_PAWN=1, W_KNIGHT=129, W_BISHOP=257,
-//     W_ROOK=385, W_QUEEN=513, B_PAWN=65, B_KNIGHT=193, B_BISHOP=321, B_ROOK=449,
-//     B_QUEEN=577
-//   - kpp_board_index[BLACK] (perspective=1): colors reversed (B pieces become "us")
-//
-// IMPORTANT: The "Friend" in HalfKP(Friend) refers to the KING being the
-// friend (side-to-move) king, NOT to piece filtering. ALL non-king pieces
-// (both colors) are included for each perspective!
+// Stockfish 13 HalfKP(Friend) active feature extraction.
 void NNUE::extractFeatures(const uint64_t* pieceBB,
                            uint32_t* whiteFeat, int& wCount,
                            uint32_t* blackFeat, int& bCount) {
@@ -96,111 +102,262 @@ void NNUE::extractFeatures(const uint64_t* pieceBB,
     int bKing = pieceBB[11] ? __builtin_ctzll(pieceBB[11]) : -1;
     if (wKing < 0 || bKing < 0) return;
 
-    // kpp_board_index for WHITE perspective (perspective=0):
-    //   white pieces are "us", black pieces are "them"
-    // kpp_board_index for BLACK perspective (perspective=1):
-    //   colors reversed: black pieces become "us", white pieces become "them"
-    // See Stockfish 13 nnue_common.h for the full table.
-    static const int psWhite[12] = {  1, 129, 257, 385, 513, -1,  65, 193, 321, 449, 577, -1};
-    static const int psBlack[12] = { 65, 193, 321, 449, 577, -1,   1, 129, 257, 385, 513, -1};
+    int wKsq = orient(0, toSfSq(wKing));
+    int bKsq = orient(1, toSfSq(bKing));
 
-    // King squares oriented to each perspective:
-    //   orient(WHITE, sq) = sq  (identity)
-    //   orient(BLACK, sq) = sq ^ 63  (rotate 180°)
-    int wKsq = wKing;
-    int bKsq = bKing ^ 63;
-
-    // White perspective: ALL non-king pieces, identity orientation
+    // White perspective
     for (int i = 0; i < 12; ++i) {
-        if (psWhite[i] < 0) continue;  // skip kings (indices 5, 11)
+        if (kpp_white[i] < 0) continue;
         uint64_t bb = pieceBB[i];
         while (bb) {
             int sq = __builtin_ctzll(bb); bb &= bb - 1;
-            whiteFeat[wCount++] = halfKPIndex(wKsq, sq, psWhite[i]);
+            int sfSq = toSfSq(sq);
+            whiteFeat[wCount++] = PS_END * wKsq + kpp_white[i] + sfSq;
         }
     }
 
-    // Black perspective: ALL non-king pieces, rotated 180°
+    // Black perspective
     for (int i = 0; i < 12; ++i) {
-        if (psBlack[i] < 0) continue;  // skip kings (indices 5, 11)
+        if (kpp_black[i] < 0) continue;
         uint64_t bb = pieceBB[i];
         while (bb) {
             int sq = __builtin_ctzll(bb); bb &= bb - 1;
-            blackFeat[bCount++] = halfKPIndex(bKsq, sq ^ 63, psBlack[i]);
+            int sfSq = toSfSq(sq);
+            int oriSq = orient(1, sfSq);
+            blackFeat[bCount++] = PS_END * bKsq + kpp_black[i] + oriSq;
         }
     }
 }
 
+// ============================================================================
+// AVX2-accelerated forward pass
+// ============================================================================
+
+// Forward pass through the network (512 uint8 input -> int32 score).
+// Uses AVX2 for hidden layer dot products.
 int NNUE::forward(const uint8_t* values) const {
-    // Hidden Layer 1: 512 -> 32 (ClippedReLU: x >> 6, clamp to [0,127])
-    int32_t l1[NNUE_L1_SIZE];
-    for (int i = 0; i < NNUE_L1_SIZE; ++i) {
-        int32_t sum = l1_biases_[i];
-        for (int j = 0; j < NNUE_FT_TOTAL; ++j)
-            sum += (int32_t)values[j] * (int32_t)l1_weights_[i * NNUE_FT_TOTAL + j];
-        l1[i] = creluHidden(sum);
+    // Hidden Layer 1: 512 -> 32
+    // Process each output neuron with SIMD dot product across 512 inputs.
+    alignas(32) int32_t l1[L1_SIZE];
+
+    constexpr int kL1Chunk = 64;  // Process 64 input pairs per SIMD iteration
+    const __m256i kOnes = _mm256_set1_epi16(1);
+
+    for (int i = 0; i < L1_SIZE; ++i) {
+        __m256i sum0 = _mm256_setzero_si256();
+        __m256i sum1 = _mm256_setzero_si256();
+
+        const int8_t* w = &l1_weights_[i * (size_t)FT_TOTAL];
+
+        // Process 64 inputs per iteration (2 × 32-byte vectors)
+        // FT_TOTAL=512, so 512/64 = 8 iterations
+        #pragma GCC unroll 4
+        for (int j = 0; j < FT_TOTAL; j += kL1Chunk) {
+            // Load 32 uint8 input values and 32 int8 weights
+            __m256i in0 = _mm256_load_si256((const __m256i*)(values + j));
+            __m256i w0  = _mm256_load_si256((const __m256i*)(w + j));
+            __m256i in1 = _mm256_load_si256((const __m256i*)(values + j + 32));
+            __m256i w1  = _mm256_load_si256((const __m256i*)(w + j + 32));
+
+            // _mm256_maddubs_epi16: uint8 * int8 → 16 int16 (pairwise sum of adjacent pairs)
+            __m256i m0 = _mm256_maddubs_epi16(in0, w0);  // 16 int16
+            __m256i m1 = _mm256_maddubs_epi16(in1, w1);  // 16 int16
+
+            // _mm256_madd_epi16: sum adjacent pairs of int16 → 8 int32
+            __m256i h0 = _mm256_madd_epi16(m0, kOnes);  // 8 int32
+            __m256i h1 = _mm256_madd_epi16(m1, kOnes);  // 8 int32
+
+            sum0 = _mm256_add_epi32(sum0, h0);
+            sum1 = _mm256_add_epi32(sum1, h1);
+        }
+
+        // Combine partial sums
+        __m256i total = _mm256_add_epi32(sum0, sum1);
+
+        // Horizontal sum of 8 int32 values
+        __m128i lo = _mm256_castsi256_si128(total);
+        __m128i hi = _mm256_extracti128_si256(total, 1);
+        lo = _mm_add_epi32(lo, hi);
+        // Shuffle: _MM_SHUFFLE(1,0,3,2) = 0x4E
+        lo = _mm_add_epi32(lo, _mm_shuffle_epi32(lo, 0x4E));
+        lo = _mm_add_epi32(lo, _mm_shuffle_epi32(lo, 0xB1));
+
+        int32_t sum = l1_biases_[i] + _mm_cvtsi128_si32(lo);
+        l1[i] = std::max(0, std::min(127, sum >> SCALE_BITS));
     }
 
-    // Hidden Layer 2: 32 -> 32 (ClippedReLU: x >> 6, clamp to [0,127])
-    int32_t l2[NNUE_L2_SIZE];
-    for (int i = 0; i < NNUE_L2_SIZE; ++i) {
-        int32_t sum = l2_biases_[i];
-        for (int j = 0; j < NNUE_L1_SIZE; ++j)
-            sum += l1[j] * (int32_t)l2_weights_[i * NNUE_L1_SIZE + j];
-        l2[i] = creluHidden(sum);
+    // Pack L1 int32 results to uint8 for L2 SIMD input
+    alignas(32) uint8_t l1_u8[L1_SIZE];
+    for (int i = 0; i < L1_SIZE; ++i)
+        l1_u8[i] = (uint8_t)l1[i];
+
+    // Hidden Layer 2: 32 -> 32
+    // L2 input is 32 uint8, weights are [32][32] int8.
+    // Process with a single AVX2 maddubs + madd per output neuron.
+    alignas(32) int32_t l2[L2_SIZE];
+    const __m256i l2_in = _mm256_load_si256((const __m256i*)l1_u8);
+
+    for (int i = 0; i < L2_SIZE; ++i) {
+        __m256i w = _mm256_load_si256((const __m256i*)&l2_weights_[i * L1_SIZE]);
+        // maddubs: 32 uint8 * 32 int8 → 16 int16
+        __m256i m = _mm256_maddubs_epi16(l2_in, w);
+        // madd: 16 int16 → 8 int32
+        __m256i h = _mm256_madd_epi16(m, kOnes);
+        // Horizontal sum
+        __m128i lo = _mm256_castsi256_si128(h);
+        __m128i hi = _mm256_extracti128_si256(h, 1);
+        lo = _mm_add_epi32(lo, hi);
+        lo = _mm_add_epi32(lo, _mm_shuffle_epi32(lo, 0x4E));
+        lo = _mm_add_epi32(lo, _mm_shuffle_epi32(lo, 0xB1));
+
+        l2[i] = std::max(0, std::min(127, (l2_biases_[i] + _mm_cvtsi128_si32(lo)) >> SCALE_BITS));
     }
 
-    // Output: 32 -> 1 (linear, no activation)
+    // Output: 32 -> 1 (scalar, 32 operations is negligible)
     int32_t out = l3_biases_[0];
-    for (int j = 0; j < NNUE_L2_SIZE; ++j)
+    for (int j = 0; j < L2_SIZE; ++j)
         out += l2[j] * (int32_t)l3_weights_[j];
 
-    // Scale to centipawns (Stockfish 13): raw / FV_SCALE
-    return out / NNUE_FV_SCALE;
+    return out / FV_SCALE;
 }
 
+// Evaluate from pre-computed accumulators (used by incremental updates).
+// Skips the FT accumulation step and goes directly to CReLU + forward pass.
+int NNUE::evaluateWithAcc(const int16_t* accWhite, const int16_t* accBlack,
+                          bool whiteToMove) const {
+    if (!weights_loaded_) return 0;
+
+    // Order perspectives: [side_to_move, ~side_to_move]
+    const int16_t* first  = whiteToMove ? accWhite : accBlack;
+    const int16_t* second = whiteToMove ? accBlack : accWhite;
+
+    // FT CReLU (clamp to [0, 127]) + pack int16 → uint8
+    alignas(32) uint8_t combined[FT_TOTAL];
+    const __m256i kZero = _mm256_setzero_si256();
+    const __m256i kMax127 = _mm256_set1_epi16(127);
+
+    for (int j = 0; j < FT_OUTPUTS; j += SIMD_WIDTH) {
+        __m256i f = _mm256_load_si256((const __m256i*)(first + j));
+        __m256i s = _mm256_load_si256((const __m256i*)(second + j));
+        f = _mm256_min_epi16(_mm256_max_epi16(f, kZero), kMax127);
+        s = _mm256_min_epi16(_mm256_max_epi16(s, kZero), kMax127);
+        __m128i f_u8 = _mm_packus_epi16(_mm256_castsi256_si128(f), _mm256_extracti128_si256(f, 1));
+        __m128i s_u8 = _mm_packus_epi16(_mm256_castsi256_si128(s), _mm256_extracti128_si256(s, 1));
+        _mm_store_si128((__m128i*)(combined + j), f_u8);
+        _mm_store_si128((__m128i*)(combined + j + FT_OUTPUTS), s_u8);
+    }
+
+    return forward(combined);
+}
+
+// Store full NNUE accumulator state for incremental caching.
+// Builds accumulators from scratch using the extracted features.
+void NNUE::storeAccumulator(const uint32_t* whiteFeat, int wCount,
+                             const uint32_t* blackFeat, int bCount,
+                             bool whiteToMove,
+                             int16_t* outAccWhite, int16_t* outAccBlack) const {
+    if (!weights_loaded_) return;
+
+    constexpr int kVecCount = FT_OUTPUTS / SIMD_WIDTH;
+
+    __m256i* accW = (__m256i*)outAccWhite;
+    __m256i* accB = (__m256i*)outAccBlack;
+    const __m256i* biasVec = (const __m256i*)ft_biases_;
+
+    for (int v = 0; v < kVecCount; ++v) {
+        __m256i b = _mm256_load_si256(biasVec + v);
+        accW[v] = b;
+        accB[v] = b;
+    }
+
+    for (int i = 0; i < wCount; ++i) {
+        const __m256i* col = (const __m256i*)&ft_weights_[whiteFeat[i] * (size_t)FT_OUTPUTS];
+        for (int v = 0; v < kVecCount; ++v)
+            accW[v] = _mm256_add_epi16(accW[v], col[v]);
+    }
+
+    for (int i = 0; i < bCount; ++i) {
+        const __m256i* col = (const __m256i*)&ft_weights_[blackFeat[i] * (size_t)FT_OUTPUTS];
+        for (int v = 0; v < kVecCount; ++v)
+            accB[v] = _mm256_add_epi16(accB[v], col[v]);
+    }
+}
+
+// Evaluate a position from the side-to-move perspective.
+// Uses AVX2 for FeatureTransformer accumulation and CReLU.
 int NNUE::evaluate(const uint32_t* whiteFeat, int wCount,
                    const uint32_t* blackFeat, int bCount,
                    bool whiteToMove) const {
     if (!weights_loaded_) return 0;
 
-    // Build two separate [256] accumulators, one for each king perspective,
-    // then concatenate into a single [512] array for the hidden layer.
-    // MUST use int16_t to match Stockfish 13's SIMD _mm256_add_epi16 wraparound.
-    int16_t accWhite[NNUE_FT_OUTPUTS];
-    int16_t accBlack[NNUE_FT_OUTPUTS];
+    // 32-byte aligned stack arrays for AVX2 loads
+    alignas(32) int16_t accWhite[FT_OUTPUTS];
+    alignas(32) int16_t accBlack[FT_OUTPUTS];
 
-    // Start from the shared FT biases
-    for (int j = 0; j < NNUE_FT_OUTPUTS; ++j) {
-        accWhite[j] = ft_biases_[j];
-        accBlack[j] = ft_biases_[j];
+    constexpr int kVecCount = FT_OUTPUTS / SIMD_WIDTH;  // 256/16 = 16
+
+    // Initialize accumulators from FT biases using SIMD
+    __m256i* accW = (__m256i*)accWhite;
+    __m256i* accB = (__m256i*)accBlack;
+    const __m256i* biasVec = (const __m256i*)ft_biases_;
+
+    #pragma GCC unroll 8
+    for (int v = 0; v < kVecCount; ++v) {
+        __m256i b = _mm256_load_si256(biasVec + v);
+        accW[v] = b;
+        accB[v] = b;
     }
 
-    // Accumulate white perspective features (int16_t addition wraps like SIMD)
+    // Accumulate white perspective: add weight columns for each active feature.
+    // Each column is 256 int16 values (FT_OUTPUTS = 16 AVX2 vectors).
     for (int i = 0; i < wCount; ++i) {
-        const int16_t* col = &ft_weights_[whiteFeat[i] * (size_t)NNUE_FT_OUTPUTS];
-        for (int j = 0; j < NNUE_FT_OUTPUTS; ++j)
-            accWhite[j] += col[j];
+        const __m256i* col = (const __m256i*)&ft_weights_[whiteFeat[i] * (size_t)FT_OUTPUTS];
+        #pragma GCC unroll 8
+        for (int v = 0; v < kVecCount; ++v)
+            accW[v] = _mm256_add_epi16(accW[v], col[v]);
     }
 
-    // Accumulate black perspective features (int16_t addition wraps like SIMD)
+    // Accumulate black perspective
     for (int i = 0; i < bCount; ++i) {
-        const int16_t* col = &ft_weights_[blackFeat[i] * (size_t)NNUE_FT_OUTPUTS];
-        for (int j = 0; j < NNUE_FT_OUTPUTS; ++j)
-            accBlack[j] += col[j];
+        const __m256i* col = (const __m256i*)&ft_weights_[blackFeat[i] * (size_t)FT_OUTPUTS];
+        #pragma GCC unroll 8
+        for (int v = 0; v < kVecCount; ++v)
+            accB[v] = _mm256_add_epi16(accB[v], col[v]);
     }
 
-    // Stockfish 13 orders perspectives: [side_to_move, ~side_to_move]
-    // whiteToMove: first 256 = white accumulator, last 256 = black accumulator
-    // blackToMove: first 256 = black accumulator, last 256 = white accumulator
+    // Order perspectives: [side_to_move, ~side_to_move]
     const int16_t* first  = whiteToMove ? accWhite : accBlack;
     const int16_t* second = whiteToMove ? accBlack : accWhite;
 
-    // Clamp to uint8 [0..127] range (Stockfish 13 FT CReLU) and interleave
-    uint8_t combined[NNUE_FT_TOTAL];
-    for (int j = 0; j < NNUE_FT_OUTPUTS; ++j) {
-        combined[j]                      = (uint8_t)creluFT(first[j]);
-        combined[j + NNUE_FT_OUTPUTS]    = (uint8_t)creluFT(second[j]);
+    // Apply FT CReLU (clamp to [0, 127]) and pack int16 → uint8 using SIMD.
+    // combined[0..255] = first perspective (CReLU'd)
+    // combined[256..511] = second perspective (CReLU'd)
+    alignas(32) uint8_t combined[FT_TOTAL];
+
+    const __m256i kZero = _mm256_setzero_si256();
+    const __m256i kMax127 = _mm256_set1_epi16(127);
+
+    // Process 16 values at a time with AVX2 int16 clamping, then SSE pack to uint8
+    #pragma GCC unroll 8
+    for (int j = 0; j < FT_OUTPUTS; j += SIMD_WIDTH) {
+        __m256i f = _mm256_load_si256((const __m256i*)(first + j));
+        __m256i s = _mm256_load_si256((const __m256i*)(second + j));
+
+        // Clamp int16 to [0, 127]
+        f = _mm256_min_epi16(_mm256_max_epi16(f, kZero), kMax127);
+        s = _mm256_min_epi16(_mm256_max_epi16(s, kZero), kMax127);
+
+        // Pack int16[16] → uint8[16] using SSE (sequential order, no lane crossing)
+        __m128i f_u8 = _mm_packus_epi16(
+            _mm256_castsi256_si128(f),
+            _mm256_extracti128_si256(f, 1));
+        __m128i s_u8 = _mm_packus_epi16(
+            _mm256_castsi256_si128(s),
+            _mm256_extracti128_si256(s, 1));
+
+        // Store first at combined[j], second at combined[j + 256]
+        _mm_store_si128((__m128i*)(combined + j), f_u8);
+        _mm_store_si128((__m128i*)(combined + j + FT_OUTPUTS), s_u8);
     }
 
     return forward(combined);
