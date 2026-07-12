@@ -2279,6 +2279,9 @@ void Lawliet::searchWorker(Board board, TimeManager& tm, int threadId, Move& out
 Move Lawliet::think(Board& board) { TimeManager tm; tm.startInfiniteSearch(); return think(board, tm); }
 
 Move Lawliet::think(Board& board, TimeManager& tm) {
+    // Reset stop flag: quit/stop may have been called before the search thread started,
+    // leaving a stale stopFlag that would prevent the search from running.
+    tm.stopFlag.store(false);
     activeTm = &tm; int count = 0; Move moves[256]; generateLegalMoves(board, board.turn, moves, count);
     if (count == 0) { activeTm = nullptr; return Move{}; }
     if (count == 1) { std::cout << "info string Only one legal move. Playing instantly." << std::endl; activeTm = nullptr; return moves[0]; }
@@ -2311,7 +2314,7 @@ Move Lawliet::think(Board& board, TimeManager& tm) {
     for (auto& t : workers) { if (t.joinable()) t.join(); }
 
     int elapsed = static_cast<int>(tm.getElapsedMs());
-    int64_t totalNodes = tm.nodes.load();
+    int64_t totalNodes = tm.nodes.load() + (masterCtx->nodesSearched & 2047) + (masterCtx->quiescenceNodes & 2047);
 
     // Record time management statistics
     masterCtx->allocatedTime = tm.allocatedTimeMs.load();
