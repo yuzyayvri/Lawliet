@@ -1508,7 +1508,7 @@ int Lawliet::quiescence(Board& board, int alpha, int beta, int ply, uint64_t has
 
     TTFlag qFlag = TT_EXACT;
     if (alpha <= originalAlpha) qFlag = TT_ALPHA;
-    storeTT(hash, 0, alpha, qFlag, bestMove, ply, ctx, staticEval);
+    storeTT(hash, 0, alpha, qFlag, bestMove, ply, ctx, haveStaticEval ? staticEval : NO_EVAL);
     return alpha;
 }
 
