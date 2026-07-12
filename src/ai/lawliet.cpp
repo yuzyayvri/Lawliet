@@ -1675,7 +1675,7 @@ int Lawliet::negamax(Board& board, int depth, int alpha, int beta, int ply, uint
         uint64_t nullHash = hash ^ zobristSide; if (board.enPassantTarget != -1) nullHash ^= zobristEp[board.enPassantTarget];
         uint64_t epBackup = board.enPassantTarget; board.enPassantTarget = -1; board.turn = -board.turn;
 
-        int R = 3 + depth / 6 + std::min(3, (staticEval - beta) / 600); // ~1.5x for NNUE scale (doubled divisor to compensate for NNUE's ~3x larger value scale)
+        int R = 3 + depth / 6 + std::min(3, (staticEval - beta) / 300); // ~1.5x for NNUE scale
         int nullScore = -negamax(board, depth - 1 - R, -beta, -beta + 1, ply + 1, nullHash, tm, ctx, lastIrreversible, fiftyMove + 1, Move{});
 
         board.turn = -board.turn; board.enPassantTarget = epBackup;
